@@ -165,8 +165,8 @@ class AwesomeAlignTrainer:
             # will want to take the average of all the metrics? alignment error rate, precision, recall do they average well the answer is no, so they will have to be handed appropriately.
             # likely by giving something in metrics which can be accumulated. The trainer becomes much more dependant on the metrics
             loss_avg += metrics["loss"].detach().item() * batch.examples_src.size(0)
-        import ipdb
-        ipdb.set_trace()
+        # import ipdb
+        # ipdb.set_trace()
 
         loss_avg /= len(self.datasetloaders.val_dataset)
         self.logger.log({"loss": loss_avg}, step=self.current_global_step)

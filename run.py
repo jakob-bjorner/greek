@@ -16,6 +16,7 @@ from greek.trainer.config import AwesomeAlignTrainer
 load_dotenv() # for local vs on cluster coding.
 init_configs() # necessary for hydra to discover configs.
 OmegaConf.register_new_resolver("eval", eval)
+cs = ConfigStore.instance()
 
 @dataclass
 class CustomKargoLauncherConfig(SlurmQueueConf): 
@@ -43,6 +44,7 @@ class CustomKargoLauncherConfig(SlurmQueueConf):
     exclude: str|None = "major,crushinator,nestor,voltron"
     additional_parameters: Dict[str, str] = field(default_factory=lambda: {"gpus": "a40:1"})
     array_parallelism: int = 20
+cs.store(name="custom_kargo_submitit", node=CustomKargoLauncherConfig, group="hydra/launcher")
 
 @dataclass
 class RunConfig:
@@ -51,7 +53,6 @@ class RunConfig:
         {"override hydra/launcher": os.getenv("GREEK_LAUNCHER", "custom_kargo_submitit")},
         "_self_",
         ])
-    is_offline: bool = True # changes logging, and what else? Should I just be creating a seperate config?
     trainer: AwesomeAlignTrainer = MISSING
     node_name: str = MISSING
     device: str = os.getenv('device', "cuda")
@@ -64,19 +65,21 @@ class RunConfig:
                  "subdir": "${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
         "run":{"dir":  "greek_runs/${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
     })
-@dataclass
-class OfflineRunConfig(RunConfig):
-    defaults: List[Any] = field(default_factory=lambda:[
-        "RunConfig",
-        {"override /logger@trainer.logger": "BasicPrintLogger"},
-        "_self_",
-    ])
-    trainer: Any = field(default_factory=lambda:{"datasetloaders":{"num_workers": 0}})
-
-cs = ConfigStore.instance()
-cs.store(name="custom_kargo_submitit", node=CustomKargoLauncherConfig, group="hydra/launcher")
 cs.store(name="RunConfig", node=RunConfig)
-cs.store(name="OfflineRunConfig", node=OfflineRunConfig)
+
+# "run_modifier" group: to use multiple just run_modifer=[mod1,mod2,...].
+OfflineRunConfig = {"defaults": [{"override /logger@trainer.logger": "BasicPrintLogger"}]}
+cs.store(name="OfflineRunConfig", node=OfflineRunConfig, group="run_modifier", package="_global_")
+
+# Question: What if multiple values are rewritten? like num_workers is changed in multiple places?
+# Answer: the last one defined is used.
+DebugRunConfig = {"trainer": {"datasetloaders":{"num_workers": 0}}}
+cs.store(name="DebugRunConfig", node=DebugRunConfig, group="run_modifier", package="_global_")
+
+# # TODO: how do I create debug configs, which have these modifiers by default?
+# OfflineDebugRunConfig = {"defaults": [{"run_modifier": ["OfflineRunConfig", "DebugRunConfig"]}]} 
+# cs.store(name="OfflineDebugRunConfig", node=OfflineDebugRunConfig, group="run_modifier", package="_global_")
+
 
 
 @hydra_main(version_base=None, config_name='RunConfig')

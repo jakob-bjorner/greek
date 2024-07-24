@@ -1,7 +1,7 @@
 from abc import abstractmethod
 import torch.nn as nn
 import torch
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Set
 from dataclasses import dataclass
 import random
 from torch.nn.utils.rnn import pad_sequence
@@ -63,13 +63,15 @@ class BaseTextAligner(nn.Module):
 
         
 class AwesomeAligner(BaseTextAligner):
-    def __init__(self, maskedlm: nn.Module, layer_number: int, device: str):
+    def __init__(self, maskedlm: nn.Module, device: str, layer_number: int, threshold: float):
         super().__init__()
         self.maskedlm = maskedlm.to(device) # for some models you can initialize them on the device. Not bert sadly.
         self.layer_number = layer_number
+        self.threshold = threshold
         self.device = device
         # the per encoder way to get layer hidden rep will be different. 
         # Some could possibly be achieved by the forward hook, others through what awesomealign used (rewriting the encode function to accept a layer parameter)
+    
     def forward(self, x):
         pass
 
@@ -78,7 +80,17 @@ class AwesomeAligner(BaseTextAligner):
         # a dict is chosen here for our return type because most of the metrics we just want to treat uniformly, and ease of adding values is important. Type safety not so much so.
 
         losses = dict()
-        losses["loss"] = self.get_supervised_training_loss(batch)
+        supervised_loss_and_label_guesses_dict = self.get_supervised_training_loss(batch)
+        losses["loss"] = supervised_loss_and_label_guesses_dict['loss']
+        # then we calculate prec_recall_aer_coverage (could make this optional if costs a bunch, but should be a good signal)
+        prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(supervised_loss_and_label_guesses_dict["src_tgt_softmax"],
+                                                               supervised_loss_and_label_guesses_dict["tgt_src_softmax"],
+                                                               batch.alignment_construction_params["bpe2word_map_src"],
+                                                               batch.alignment_construction_params["bpe2word_map_tgt"],
+                                                               batch.alignment_construction_params["gold_possible_word_alignments"],
+                                                               batch.alignment_construction_params["gold_sure_word_alignments"],
+                                                               )
+        losses.update(prec_recall_aer_coverage_partial_metrics)
         return losses
 
     def get_overall_loss(self, batch: CollateFnReturn):
@@ -96,7 +108,6 @@ class AwesomeAligner(BaseTextAligner):
         PAD_ID = 0
         CLS_ID = 101
         SEP_ID = 102
-        token_level_alignment_mat_labels = self.construct_token_level_alignment_mat_from_word_level_alignment_list(**batch.alignment_construction_params)
         src_hidden_states = self.get_encoder_hidden_state(batch.examples_src)
         tgt_hidden_states = self.get_encoder_hidden_state(batch.examples_tgt)
         alignment_scores = (src_hidden_states @ tgt_hidden_states.transpose(-1,-2))
@@ -104,41 +115,33 @@ class AwesomeAligner(BaseTextAligner):
         tgt_src_mask = ((batch.examples_src == CLS_ID) | (batch.examples_src == SEP_ID) | (batch.examples_src == PAD_ID)).to(self.device)
         len_src = src_tgt_mask.sum(1)
         len_tgt = tgt_src_mask.sum(1)
-
-        
         src_tgt_mask = (src_tgt_mask * torch.finfo(torch.float32).min)[:, None, :].to(self.device)
         tgt_src_mask = (tgt_src_mask * torch.finfo(torch.float32).min)[:, :, None].to(self.device)
-        # said: how does the source align to the target for src_tgt_softmax
+        # src_tgt_softmax: how the source aligns to the target
         src_tgt_softmax = torch.softmax(alignment_scores + src_tgt_mask, dim=-1)
         tgt_src_softmax = torch.softmax(alignment_scores + tgt_src_mask, dim=-2)
 
+        token_level_alignment_mat_labels = self.construct_token_level_alignment_mat_from_word_level_alignment_list(**batch.alignment_construction_params)
         # div by len is default for now:
         # note: in their implementation of div by len I think they have swapped the src and tgt lens.
         # turns out flatten.sum isn't significantly slower on mps or cpu than .sum((1,2))
         per_batch_loss = -(token_level_alignment_mat_labels * src_tgt_softmax).flatten(1).sum(1) / len_tgt \
              - (token_level_alignment_mat_labels * tgt_src_softmax).flatten(1).sum(1) / len_src
-        return per_batch_loss.mean()
+        return {"loss": per_batch_loss.mean(), "src_tgt_softmax": src_tgt_softmax, "tgt_src_softmax": tgt_src_softmax}
     
-    def construct_token_level_alignment_mat_from_word_level_alignment_list(self, word_aligns, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
+    def construct_token_level_alignment_mat_from_word_level_alignment_list(self, gold_possible_word_alignments, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
         # TODO: remove kwargs and clean up the difference between true labels and the self training labels.
-        device = "cpu" # there are going to be many small operations, perhaps better to do these on the cpu first, and then move them to gpu
-        batch_size = len(word_aligns)
+        device = 'cpu' # there many small operations, better to do these on the cpu first, and then move them to gpu 10% speed up in old method, but 50% for my code because I have to create tensors.
+        batch_size = len(gold_possible_word_alignments)
         token_level_alignment_mat = torch.zeros((batch_size, src_len, tgt_len), device=device)
+        # I rewrote the loop here, but it is less readable, and only causes a 10% speedup. 
         for i in range(batch_size):
-            word_aligns_i = word_aligns[i]
+            gold_possible_word_alignment = gold_possible_word_alignments[i]
             bpe2word_map_src_i = torch.tensor(bpe2word_map_src[i], device=device)
             bpe2word_map_tgt_i = torch.tensor(bpe2word_map_tgt[i], device=device)
-            for src_index_word, tgt_index_word in word_aligns_i:
+            for src_index_word, tgt_index_word in gold_possible_word_alignment:
                 token_level_alignment_mat[i, 1 + torch.where(bpe2word_map_src_i == src_index_word)[0][None, :, None], 1 + torch.where(bpe2word_map_tgt_i == tgt_index_word)[0][None, None, :]] = 1
-        # for idx, (word_align, b2w_src, b2w_tgt) in enumerate(zip(word_aligns, bpe2word_map_src, bpe2word_map_tgt)):
-        #     len_src = min(bpelen_src, len(b2w_src))
-        #     len_tgt = min(bpelen_tgt, len(b2w_tgt))
-        #     for i in range(len_src):
-        #         for j in range(len_tgt):
-        #             if (b2w_src[i], b2w_tgt[j]) in word_align:
-        #                 guide[idx, 0, i+1, j+1] = 1.0
 
-        
         return token_level_alignment_mat.to(self.device)
 
     def get_encoder_hidden_state(self, input_ids):
@@ -176,6 +179,58 @@ class AwesomeAligner(BaseTextAligner):
     def get_co_loss(self, batch: CollateFnReturn):
         # consistency optimization loss, and this will likely be combined with so_loss as done in awesome-align.
         raise NotImplementedError() 
+    
+    def get_bpe_prec_recall_aer_coverage(self,):
+        # Should I include this? our hope is to do one to one matching and just add word, phrase, and sentence level encodings, so this won't matter...
+        # I will delay writing this. 
+        raise NotImplementedError() 
+
+    def get_word_prec_recall_aer_coverage_partial_metrics(self, src_tgt_softmax: torch.Tensor, tgt_src_softmax: torch.Tensor, bpe2word_map_src, bpe2word_map_tgt, gold_possible_word_alignments, gold_sure_word_alignments):
+        # computes over a batch based on predictions, returns relevant information to be eventually aggragated
+        # prec_recall_aer_coverage
+        # need to get the prec, recall, and aer metrics. This is 
+        # prec: #possible correct guesses/guesses made = (|H \intersection P| / |H|)
+        # recall: #sure correct guesses/possible correct = (|H \intersection S| / |S|)
+
+        # get the token level alignment
+        batch_size = src_tgt_softmax.size(0)
+        token_alignment = (src_tgt_softmax > self.threshold) * (tgt_src_softmax > self.threshold)
+        word_level_alignments = self.get_word_alignment_from_token_alignment(token_alignment, bpe2word_map_src, bpe2word_map_tgt)
+        
+        num_sure = 0
+        guesses_made = 0
+        guesses_made_in_possible = 0
+        guesses_made_in_sure = 0
+        for i in range(batch_size):
+            word_level_alignment = word_level_alignments[i]
+            gold_possible_word_alignment = gold_possible_word_alignments[i]
+            gold_sure_word_alignment = gold_sure_word_alignments[i]
+
+            num_sure += len(gold_sure_word_alignment)
+            guesses_made += len(word_level_alignment)
+            guesses_made_in_sure += len(set(word_level_alignment).intersection(gold_sure_word_alignment))
+            guesses_made_in_possible += len(set(word_level_alignment).intersection(gold_possible_word_alignment))
+        prec_recall_aer_coverage_partial_metrics = {
+            "num_sure": num_sure,
+            "guesses_made": guesses_made,
+            "guesses_made_in_sure": guesses_made_in_sure,
+            "guesses_made_in_possible": guesses_made_in_possible,
+        }
+        return prec_recall_aer_coverage_partial_metrics
+
+    def get_word_alignment_from_token_alignment(self, token_alignment: torch.Tensor, bpe2word_map_src, bpe2word_map_tgt):
+        # need word level alignment: using the any token matching heuristic to get at this.
+        token_alignment = token_alignment.detach().cpu()
+        batch_size = token_alignment.size(0)
+        word_level_alignments = [set() for i in range(batch_size)]
+        # could need to place this alignment matrix on cpu, as I will be decomposing it as I look for word level alignments.
+        # will first try without it, and just see how the performance changes from 11.28it/s on train 30.72it/s on eval batch_size 8,  1.78 it/s on train and 3.31 it/s on eval batch_size 64.
+        for i in range(batch_size):
+            for j, k in zip(*torch.where(token_alignment[i])):
+                # given that the word alignments are computed with a cls token prepended, be -1 to make alignment zero indexed.
+                word_level_alignments[i].add((bpe2word_map_src[i][j] - 1, bpe2word_map_tgt[i][k] - 1))
+
+        return [list(word_level_alignment) for word_level_alignment in word_level_alignments]
 
     def validation_step(self, batch: CollateFnReturn):
         # both get the loss on the data, and if there are labels get the label assignment error, aer and coverage related metrics.
@@ -197,7 +252,8 @@ def get_collate_fn(pad_token_id, block_size):
         examples_src, examples_tgt, examples_srctgt, examples_tgtsrc, langid_srctgt, langid_tgtsrc, psi_examples_srctgt, psi_labels = [], [], [], [], [], [], [], []
         src_len = tgt_len = 0
         bpe2word_map_src, bpe2word_map_tgt = [], []
-        word_aligns = []
+        gold_possible_word_alignments = []
+        gold_sure_word_alignments = []
         for example in examples:
             end_id = [example.src_ids[-1]]
 
@@ -254,7 +310,8 @@ def get_collate_fn(pad_token_id, block_size):
 
             bpe2word_map_src.append(example.bpe2word_map_src)
             bpe2word_map_tgt.append(example.bpe2word_map_tgt)
-            word_aligns.append(example.possible_labels)
+            gold_possible_word_alignments.append(example.possible_labels)
+            gold_sure_word_alignments.append(example.sure_labels)
         examples_src = pad_sequence(examples_src, batch_first=True, padding_value=pad_token_id)
         examples_tgt = pad_sequence(examples_tgt, batch_first=True, padding_value=pad_token_id)
         examples_srctgt = pad_sequence(examples_srctgt, batch_first=True, padding_value=pad_token_id)
@@ -263,11 +320,11 @@ def get_collate_fn(pad_token_id, block_size):
         langid_tgtsrc = pad_sequence(langid_tgtsrc, batch_first=True, padding_value=pad_token_id)
         psi_examples_srctgt = pad_sequence(psi_examples_srctgt, batch_first=True, padding_value=pad_token_id)
         psi_labels = torch.tensor(psi_labels)
-        if word_aligns[0] is None:
-            word_aligns = None
+        if gold_possible_word_alignments[0] is None:
+            gold_possible_word_alignments = None
 
         # at some point I have to create the alignments between the source and the target through the model itself, and I have the necessary parameters here for doing that, so I should just give what parameters I have to the function which is in charege of that
-        alignment_construction_params = dict(inputs_src=examples_src, inputs_tgt=examples_tgt, bpe2word_map_src=bpe2word_map_src, bpe2word_map_tgt=bpe2word_map_tgt, src_len=src_len, tgt_len=tgt_len, word_aligns=word_aligns)
+        alignment_construction_params = dict(inputs_src=examples_src, inputs_tgt=examples_tgt, bpe2word_map_src=bpe2word_map_src, bpe2word_map_tgt=bpe2word_map_tgt, src_len=src_len, tgt_len=tgt_len, gold_possible_word_alignments=gold_possible_word_alignments, gold_sure_word_alignments=gold_sure_word_alignments)
         # TODO: there could be a difference between using this and supervised finetuning, might want to get the loss from SO as a possible metric in eval seperate from AER
         #   then could add new loss called supervised loss which requires the label to be given, and allows for recording of this loss
         # return [examples_src, examples_tgt, alignment_construction_params, examples_srctgt, langid_srctgt, examples_tgtsrc, langid_tgtsrc, psi_examples_srctgt, psi_labels]
