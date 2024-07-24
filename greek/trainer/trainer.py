@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
-from greek.model.model import AwesomeAligner, CollateFnReturn
+from greek.model.model import AwesomeAligner, CollateFnReturn, AwesomeAlignerValReturn
 from greek.logger.logger import BaseLogger
 from greek.datasetloaders.datasetloaders import AwesomeAlignDatasetLoaders
 from typing import Any, Callable, Iterable
@@ -73,8 +73,8 @@ class AwesomeAlignTrainer:
                  log_every_n_steps: int, 
                  val_every_n_steps: int
                  ):
-        if (max_steps <= 0 and max_epochs <= 0) or (max_steps > 0 and max_epochs > 0):
-            raise InterruptedError(f"exactly one of max_steps or max_epochs be positive, {max_epochs=}, {max_steps=}")
+        if (max_steps < 0 and max_epochs < 0) or (max_steps >= 0 and max_epochs >= 0):
+            raise InterruptedError(f"exactly one of max_steps or max_epochs be non negative, {max_epochs=}, {max_steps=}")
         self.model = model
         self.datasetloaders = datasetloaders
         self.logger = logger
@@ -122,10 +122,10 @@ class AwesomeAlignTrainer:
             # each loss should be backpropped seperately. how will this work? I can make the awesome align trainer dependant on the model, and the losses...
             # will just leave it for now, and see how bad it is later.
             # TODO: check if backpropping only the one loss is much slower.
-            loss = losses["loss"]
+            loss = losses["loss_per_batch"].mean()
             loss.backward()
             if self.current_global_step % self.log_every_n_steps == 0:
-                log_dict = {k: v.detach().mean().item() for k, v in losses.items()}
+                log_dict = {k: (v.detach().mean().item() if isinstance(v, torch.Tensor) else v) for k, v in losses.items()}
                 if self.device == "cuda":
                     log_dict.update({f"mem_on_{self.device}": torch.cuda.memory_allocated()  })
                 elif self.device == "mps":
@@ -158,23 +158,19 @@ class AwesomeAlignTrainer:
         torch.set_grad_enabled(False)
         # should run alignment for all languages on the val set
         progress_bar_val_iterator: Iterable[CollateFnReturn] = tqdm.tqdm(self.datasetloaders.val_dataloader()) 
-        loss_avg = 0
+        metric = AwesomeAlignerValReturn()
         for batch in progress_bar_val_iterator:
             batch.to(self.device)
-            metrics = self.model.validation_step(batch)
-            # will want to take the average of all the metrics? alignment error rate, precision, recall do they average well the answer is no, so they will have to be handed appropriately.
-            # likely by giving something in metrics which can be accumulated. The trainer becomes much more dependant on the metrics
-            loss_avg += metrics["loss"].detach().item() * batch.examples_src.size(0)
-        # import ipdb
-        # ipdb.set_trace()
+            metric(self.model.validation_step(batch))
 
-        loss_avg /= len(self.datasetloaders.val_dataset)
-        self.logger.log({"loss": loss_avg}, step=self.current_global_step)
-        
+        log_dict = metric.compute()
+        log_dict = {("eval_" + key): val for key, val in log_dict.items()}
+        self.logger.log(log_dict, step=self.current_global_step)
+
         if was_training:
             self.model.train()
         torch.set_grad_enabled(was_grad_enabled)
-        
+
 
     def test_loop(self):
         # should run alignment for all languages on the test sets.

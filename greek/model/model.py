@@ -54,12 +54,52 @@ class BaseTextAligner(nn.Module):
     def get_aligned_word(self, inputs_src, inputs_tgt):
         raise NotImplementedError()
 
-# class AwesomeAlignerValReturn(UserDict):
-#     def update(self, other=None, **kwargs):
-#         # TODO: this needs a more reasonable update function where the val parameters will be treated differently depending on what they are...
-#         # thus our aer, and prec recall can be handled correctly. Might look at torchmetrics.
-#         # def update(self, m,  **kwargs):
-#         ...
+class AwesomeAlignerValReturn(UserDict):
+    # class that handles all my metrics at once in the fashion of torchmetrics.
+    # def update(self, other=None, **kwargs):
+    #     # TODO: this needs a more reasonable update function where the val parameters will be treated differently depending on what they are...
+    #     # thus our aer, and prec recall can be handled correctly. Might look at torchmetrics.
+    #     # def update(self, m,  **kwargs):
+    #     # make sure every tensor object that requires grad gets detach().cpu().mean() or something similar.
+    #     assert other is not None, "this function is meant only to update for "other.keys()
+    #     self.data[]
+    #     ...
+    total_num_elements: int = 0
+
+    def __call__(self, other: Dict):
+        if len(self.data) != 0:
+            assert other.keys() == self.data.keys(), f"must have the same keys to be able to update the values in the metric item, but got {list(other.keys())=} instead of {list(self.data.keys())}"
+        # average by default, and then for specific keys, do specific things.
+
+        num_elements = 0
+        for key, value in other.items():
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu() # .mean().item()
+                if num_elements == 0:
+                    num_elements = value.size(0)
+                else:
+                    assert num_elements == value.size(0), "we only allow tensors of batch size for ease of determining the number of elements"
+                value = value.sum().item()
+
+            self.data[key] = self.data.get(key, 0) + value # the default is in the case that this is the first update call.
+        self.total_num_elements += num_elements
+
+    def compute(self):
+        """computes the aggigate metrics for this class to be returned for logging/printing."""
+        aggregate_metrics = dict()
+
+        for key in self.data.keys():
+            if key not in ["loss_per_batch", "guesses_made_in_possible", "guesses_made", "num_sure", "guesses_made_in_sure"]:
+                aggregate_metrics["avg_" + key] = self.data[key] / self.total_num_elements
+
+        aggregate_metrics["avg_loss"] = self.data["loss_per_batch"] / self.total_num_elements
+        aggregate_metrics["total_num_elements"] = self.total_num_elements
+        
+        aggregate_metrics["Precision"] = self.data["guesses_made_in_possible"] / self.data["guesses_made"]
+        aggregate_metrics["Recall"] = self.data["guesses_made_in_sure"] / self.data["num_sure"]
+        aggregate_metrics["AER"] = 1 - ((self.data["guesses_made_in_possible"] + self.data["guesses_made_in_sure"]) / (self.data["guesses_made"] + self.data["num_sure"]))
+
+        return aggregate_metrics
 
         
 class AwesomeAligner(BaseTextAligner):
@@ -81,7 +121,7 @@ class AwesomeAligner(BaseTextAligner):
 
         losses = dict()
         supervised_loss_and_label_guesses_dict = self.get_supervised_training_loss(batch)
-        losses["loss"] = supervised_loss_and_label_guesses_dict['loss']
+        losses["loss_per_batch"] = supervised_loss_and_label_guesses_dict['loss_per_batch']
         # then we calculate prec_recall_aer_coverage (could make this optional if costs a bunch, but should be a good signal)
         prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(supervised_loss_and_label_guesses_dict["src_tgt_softmax"],
                                                                supervised_loss_and_label_guesses_dict["tgt_src_softmax"],
@@ -127,7 +167,7 @@ class AwesomeAligner(BaseTextAligner):
         # turns out flatten.sum isn't significantly slower on mps or cpu than .sum((1,2))
         per_batch_loss = -(token_level_alignment_mat_labels * src_tgt_softmax).flatten(1).sum(1) / len_tgt \
              - (token_level_alignment_mat_labels * tgt_src_softmax).flatten(1).sum(1) / len_src
-        return {"loss": per_batch_loss.mean(), "src_tgt_softmax": src_tgt_softmax, "tgt_src_softmax": tgt_src_softmax}
+        return {"loss_per_batch": per_batch_loss, "src_tgt_softmax": src_tgt_softmax, "tgt_src_softmax": tgt_src_softmax}
     
     def construct_token_level_alignment_mat_from_word_level_alignment_list(self, gold_possible_word_alignments, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
         # TODO: remove kwargs and clean up the difference between true labels and the self training labels.
@@ -196,7 +236,7 @@ class AwesomeAligner(BaseTextAligner):
         batch_size = src_tgt_softmax.size(0)
         token_alignment = (src_tgt_softmax > self.threshold) * (tgt_src_softmax > self.threshold)
         word_level_alignments = self.get_word_alignment_from_token_alignment(token_alignment, bpe2word_map_src, bpe2word_map_tgt)
-        
+
         num_sure = 0
         guesses_made = 0
         guesses_made_in_possible = 0
@@ -228,7 +268,7 @@ class AwesomeAligner(BaseTextAligner):
         for i in range(batch_size):
             for j, k in zip(*torch.where(token_alignment[i])):
                 # given that the word alignments are computed with a cls token prepended, be -1 to make alignment zero indexed.
-                word_level_alignments[i].add((bpe2word_map_src[i][j] - 1, bpe2word_map_tgt[i][k] - 1))
+                word_level_alignments[i].add((bpe2word_map_src[i][j - 1], bpe2word_map_tgt[i][k - 1]))
 
         return [list(word_level_alignment) for word_level_alignment in word_level_alignments]
 
@@ -343,25 +383,4 @@ def get_collate_fn(pad_token_id, block_size):
     return collate_fn
 
 if __name__ == "__main__":
-    # test the collate function
-    # from torch.utils.data import DataLoader
-    # from greek.datasetloaders.datasetloaders import AwesomeAlignDataset
-    # from transformers import AutoTokenizer
-    # from tqdm import tqdm
-    # tokenizer = AutoTokenizer.from_pretrained("google-bert/bert-base-multilingual-cased")
-    # # src_tgt_file = "/Users/jakob/dev/greek/data/awesome_modified_data/enfr/test_enfr.src-tgt"
-    # # gold_labels = "/Users/jakob/dev/greek/data/awesome_modified_data/enfr/test_enfr.gold"
-    # src_tgt_file = "/Users/jakob/dev/greek/data/awesome_training_data/multilingual_data_nozh.src-tgt"
-    # gold_labels = None
-    # pad_token_id = tokenizer.pad_token_id
-    # dataset = AwesomeAlignDataset(tokenizer=tokenizer, src_tgt_file=src_tgt_file, gold_file=gold_labels, gold_one_index=True, ignore_possible_alignments=False)
-    # test_loader = DataLoader(dataset, num_workers=0, batch_size=4, collate_fn=get_collate_fn(pad_token_id, block_size=512))
-    # for i, batch in enumerate(tqdm(test_loader)):
-    #     # print(batch)
-    #     pass
     pass
-    # #%%
-    # from transformers import AutoTokenizer
-    # maskedlm = AutoTokenizer.from_pretrained("google-bert/bert-base-multilingual-cased")
-    # maskedlm.model_max_length
-    # # %%

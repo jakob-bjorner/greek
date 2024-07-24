@@ -51,6 +51,8 @@ class CustomWandBLogger(WandBLogger):
         self.run = super().init(config, **kwargs)
         self.wandb.define_metric("custom_step")
         self.wandb.define_metric("evaluate_*", step_metric='custom_step') # allows for asynchronous logging of eval events.
+        
         return self.run
+    
 
 
