@@ -11,7 +11,8 @@ class BaseLogger(ABC):
     def __init__(self, **kwargs):
         raise NotImplementedError()
     @abstractmethod
-    def init(self, config: Dict, **kwargs) -> contextlib.AbstractContextManager:
+    def init(self, config: Dict, **kwargs) -> contextlib.AbstractContextManager: 
+        # returning this type of object allows for nice cleanup in multirun cases for wandb, but requires to run: with init(): \n\t body...
         raise NotImplementedError()
     @abstractmethod
     def log(self, log_dict, **kwargs):
@@ -38,6 +39,7 @@ class WandBLogger(BaseLogger):
         self.wandb = wandb
     def init(self, config: Dict, **kwargs) -> contextlib.AbstractContextManager:
         self.kwargs.update(kwargs)
+        pprint((config, kwargs))
         self.run = self.wandb.init(**self.kwargs, config=config)
         assert isinstance(self.run, contextlib.AbstractContextManager)
         return self.run

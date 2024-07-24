@@ -15,3 +15,13 @@ python run.py logger@trainer.logger=BasicPrintLogger
 this is more complex than I would have hoped for, but can easily be seen why it should be done this way, and can be more easily redefined in config classes than on the command line, but easy to make sweeps with the syntax still. The autocomplete doesn't recognize this syntax tho, have to start with logger=\tab, and then go back and add the @ sugar.
 
 - test the models which were trained inside this new repo to ensure prec recall aer and coverage are consistent. Done. on nopretraining they have the same AER prec and recall.
+
+debugging script:
+```bash
+python run.py +run_modifier=[DebugRunConfig,OfflineRunConfig] dataset@trainer.datasetloaders.train_dataset=JaEnSupervisedAwesomeAlignDatasetEval trainer.max_steps=-1 trainer.max_epochs=1 trainer.log_every_n_steps=10
+```
+
+replicate supervised training script:
+```bash
+python run.py +run_modifier=SupervisedRunConfig
+```

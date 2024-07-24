@@ -54,6 +54,7 @@ class RunConfig:
         "_self_",
         ])
     trainer: AwesomeAlignTrainer = MISSING
+    run_type: str|None = None
     node_name: str = MISSING
     device: str = os.getenv('device', "cuda")
     output_dir: str = MISSING
@@ -73,9 +74,22 @@ cs.store(name="OfflineRunConfig", node=OfflineRunConfig, group="run_modifier", p
 
 # Question: What if multiple values are rewritten? like num_workers is changed in multiple places?
 # Answer: the last one defined is used.
-DebugRunConfig = {"trainer": {"datasetloaders":{"num_workers": 0}}}
+DebugRunConfig = {"trainer": {"datasetloaders":{"num_workers": 0}},
+                  "hydra": {
+                      "sweep":{"dir": "greek_runs", 
+                              "subdir": "$debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
+                      "run":{"dir":  "greek_runs/$debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"}}}
 cs.store(name="DebugRunConfig", node=DebugRunConfig, group="run_modifier", package="_global_")
 
+SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"},
+                                    {"override /dataset@trainer.datasetloaders.val_dataset": "JaEnSupervisedAwesomeAlignDatasetTest"}],
+                       "trainer": {"datasetloaders":{"batch_size": 8},
+                                   "max_epochs": 5,
+                                   "get_optimizer": {"lr": 1e-4},
+                                   "log_every_n_steps": 20,
+                                   "val_every_n_steps": 100},
+                       "run_type": "supervised"}
+cs.store(name="SupervisedRunConfig", node=SupervisedRunConfig, group="run_modifier", package="_global_")
 # # TODO: how do I create debug configs, which have these modifiers by default?
 # OfflineDebugRunConfig = {"defaults": [{"run_modifier": ["OfflineRunConfig", "DebugRunConfig"]}]} 
 # cs.store(name="OfflineDebugRunConfig", node=OfflineDebugRunConfig, group="run_modifier", package="_global_")
@@ -96,7 +110,7 @@ def my_app(cfg: RunConfig) -> None:
 
     cfg.node_name = os.getenv("SLURMD_NODENAME", "NO_NODE_NAME_FOUND")
     cfg.output_dir = HydraConfig.get().runtime.output_dir
-    # cfg.trainer.logger.name = f"pDim={cfg.model.prior_dim}_lr={cfg.trainer.encoder_lr}_en={encoder_model_name}_de={decoder_model_name}_bKl={cfg.model.beta}_ep={cfg.trainer.epochs}_bs={cfg.batch_size}"
+    cfg.trainer.logger.name = f"{cfg.run_type}_ep={cfg.trainer.max_epochs}_bs={cfg.trainer.datasetloaders.batch_size}"
 
     isMultirun = "num" in HydraConfig.get().job # type: ignore # for implicit debugging when launching a job without -m.
     # cfg.datasetloaders.num_workers =  3 if not isMultirun else HydraConfig.get().launcher.cpus_per_task - 3

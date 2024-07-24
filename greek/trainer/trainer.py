@@ -102,7 +102,7 @@ class AwesomeAlignTrainer:
         self.datasetloaders.setup(block_size=512) 
         
         if self.max_steps < 0:
-            self.max_steps = self.max_epochs * len(self.datasetloaders.train_dataset) / self.datasetloaders.batch_size
+            self.max_steps = self.max_epochs * np.ceil(len(self.datasetloaders.train_dataset) / self.datasetloaders.batch_size)
         elif self.max_epochs < 0:
             self.max_epochs = self.max_steps * self.datasetloaders.batch_size / len(self.datasetloaders.train_dataset)
         
@@ -124,30 +124,33 @@ class AwesomeAlignTrainer:
             # TODO: check if backpropping only the one loss is much slower.
             loss = losses["loss_per_batch"].mean()
             loss.backward()
-            if self.current_global_step % self.log_every_n_steps == 0:
+            if self.current_global_step % self.log_every_n_steps == 0 or self.current_global_step + 1 >= self.max_steps:
                 log_dict = {k: (v.detach().mean().item() if isinstance(v, torch.Tensor) else v) for k, v in losses.items()}
                 if self.device == "cuda":
-                    log_dict.update({f"mem_on_{self.device}": torch.cuda.memory_allocated()  })
+                    log_dict.update({f"mem_on_{self.device}": torch.cuda.memory_allocated() / (2**30) })
                 elif self.device == "mps":
                     log_dict.update({f"mem_on_{self.device}": torch.mps.current_allocated_memory()})
-                
+                log_dict = {("train_" + key): value for key, value in log_dict.items()}
                 self.logger.log(log_dict, step=self.current_global_step)
             progress_bar_iterator.set_postfix_str(formatted_string_postfix.format_map({"loss": loss.detach().item()}))
             self.optimizer.step()
             self.optimizer.zero_grad()
             self.scheduler.step()
+            self.current_global_step += 1
             if self.current_global_step % self.val_every_n_steps == 0:
                 self.validation_loop()
-            self.current_global_step += 1
             if self.current_global_step >= self.max_steps:
                 break
 
     def fit(self):
         self.initialize_train()
+        self.validation_loop()
         while self.current_epoch < self.max_epochs:
             self.train_loop()
             self.current_epoch += 1
-        self.validation_loop()
+        if self.current_global_step % self.val_every_n_steps != 0:
+            # if we haven't already validated after the last step, then we will run validate loop.
+            self.validation_loop()
         self.test_loop()
         self.save()
 
@@ -161,7 +164,7 @@ class AwesomeAlignTrainer:
         metric = AwesomeAlignerValReturn()
         for batch in progress_bar_val_iterator:
             batch.to(self.device)
-            metric(self.model.validation_step(batch))
+            metric.update(self.model.validation_step(batch))
 
         log_dict = metric.compute()
         log_dict = {("eval_" + key): val for key, val in log_dict.items()}

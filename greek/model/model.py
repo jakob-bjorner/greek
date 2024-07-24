@@ -2,7 +2,7 @@ from abc import abstractmethod
 import torch.nn as nn
 import torch
 from typing import List, Dict, Any, Tuple, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
 from torch.nn.utils.rnn import pad_sequence
 from greek.dataset.dataset import AwesomeAlignDatasetReturn
@@ -54,19 +54,11 @@ class BaseTextAligner(nn.Module):
     def get_aligned_word(self, inputs_src, inputs_tgt):
         raise NotImplementedError()
 
-class AwesomeAlignerValReturn(UserDict):
-    # class that handles all my metrics at once in the fashion of torchmetrics.
-    # def update(self, other=None, **kwargs):
-    #     # TODO: this needs a more reasonable update function where the val parameters will be treated differently depending on what they are...
-    #     # thus our aer, and prec recall can be handled correctly. Might look at torchmetrics.
-    #     # def update(self, m,  **kwargs):
-    #     # make sure every tensor object that requires grad gets detach().cpu().mean() or something similar.
-    #     assert other is not None, "this function is meant only to update for "other.keys()
-    #     self.data[]
-    #     ...
+@dataclass
+class AwesomeAlignerValReturn:
     total_num_elements: int = 0
-
-    def __call__(self, other: Dict):
+    data: Dict = field(default_factory=dict)
+    def update(self, other: Dict):
         if len(self.data) != 0:
             assert other.keys() == self.data.keys(), f"must have the same keys to be able to update the values in the metric item, but got {list(other.keys())=} instead of {list(self.data.keys())}"
         # average by default, and then for specific keys, do specific things.
@@ -153,8 +145,8 @@ class AwesomeAligner(BaseTextAligner):
         alignment_scores = (src_hidden_states @ tgt_hidden_states.transpose(-1,-2))
         src_tgt_mask = ((batch.examples_tgt == CLS_ID) | (batch.examples_tgt == SEP_ID) | (batch.examples_tgt == PAD_ID)).to(self.device)
         tgt_src_mask = ((batch.examples_src == CLS_ID) | (batch.examples_src == SEP_ID) | (batch.examples_src == PAD_ID)).to(self.device)
-        len_src = src_tgt_mask.sum(1)
-        len_tgt = tgt_src_mask.sum(1)
+        len_src = (1 - src_tgt_mask.float()).sum(1)
+        len_tgt = (1 - tgt_src_mask.float()).sum(1)
         src_tgt_mask = (src_tgt_mask * torch.finfo(torch.float32).min)[:, None, :].to(self.device)
         tgt_src_mask = (tgt_src_mask * torch.finfo(torch.float32).min)[:, :, None].to(self.device)
         # src_tgt_softmax: how the source aligns to the target
@@ -163,10 +155,10 @@ class AwesomeAligner(BaseTextAligner):
 
         token_level_alignment_mat_labels = self.construct_token_level_alignment_mat_from_word_level_alignment_list(**batch.alignment_construction_params)
         # div by len is default for now:
-        # note: in their implementation of div by len I think they have swapped the src and tgt lens.
+        # note: in their implementation of div by len I think they have swapped the src and tgt lens. note on this note: I think their div by len is actually right nvm.
         # turns out flatten.sum isn't significantly slower on mps or cpu than .sum((1,2))
-        per_batch_loss = -(token_level_alignment_mat_labels * src_tgt_softmax).flatten(1).sum(1) / len_tgt \
-             - (token_level_alignment_mat_labels * tgt_src_softmax).flatten(1).sum(1) / len_src
+        per_batch_loss = -(token_level_alignment_mat_labels * src_tgt_softmax).flatten(1).sum(1) / len_src \
+             - (token_level_alignment_mat_labels * tgt_src_softmax).flatten(1).sum(1) / len_tgt
         return {"loss_per_batch": per_batch_loss, "src_tgt_softmax": src_tgt_softmax, "tgt_src_softmax": tgt_src_softmax}
     
     def construct_token_level_alignment_mat_from_word_level_alignment_list(self, gold_possible_word_alignments, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
@@ -288,6 +280,7 @@ class AwesomeAligner(BaseTextAligner):
 
 
 def get_collate_fn(pad_token_id, block_size):
+    """ Known issue: on mac, this doesn't work with dataloaders when num_workers != 0, as the spawn processes is used to fork, and pickling a _local_ function isn't supported yet."""
     def collate_fn(examples: List[AwesomeAlignDatasetReturn]):
         examples_src, examples_tgt, examples_srctgt, examples_tgtsrc, langid_srctgt, langid_tgtsrc, psi_examples_srctgt, psi_labels = [], [], [], [], [], [], [], []
         src_len = tgt_len = 0

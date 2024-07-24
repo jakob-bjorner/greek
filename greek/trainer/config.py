@@ -44,8 +44,8 @@ class AwesomeAlignTrainer:
     get_optimizer: Any = field(default_factory=lambda: {"lr": 2e-5})
     get_scheduler: SchedulerCallable = MISSING
     device: str = "${device}"
-    max_steps: int = 40000 # positive to set a limit. Must set one of these
-    max_epochs: float = -1 # 1.0 # positive to set a limit
+    max_steps: int = -1 # non negative to set a limit. Must set one of these
+    max_epochs: float = -1.0 # non negative to set a limit
     log_every_n_steps: int = 500
     val_every_n_steps: int = 2000
     # seed: int = 0 # for numbers 0 or lower, the seed is random. This is for easy testing.
