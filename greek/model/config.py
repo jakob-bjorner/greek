@@ -26,9 +26,17 @@ class Aligner:
         "_self_",
         ])
     maskedlm: BasicMaskedLM = MISSING # important that the type be Any, because the type will be enforced in the application. ie need all the values defined for this type. encoder is flexible due to basic configs for debugging.
+    tokenizer: Any = "${tokenizer}"
     device: str = "${device}"
     layer_number: int = 7
     threshold: float = 0.001 # default Awesome-align threshold.
+    train_supervised: bool = False
+    train_so: bool = False
+    train_psi: bool = False
+    train_mlm: bool = False
+    train_tlm: bool = False
+    mlm_probability: float = 0.15 # default for bert/roberta
+    # train_co
     _target_: str = MISSING
 
 ConfigStore.instance().store(name="AwesomeAligner", node=Aligner(_target_="greek.model.model.AwesomeAligner"), group="model")

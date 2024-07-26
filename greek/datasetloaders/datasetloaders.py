@@ -3,7 +3,7 @@ from typing import Optional, List, Tuple, Set
 from dataclasses import dataclass
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 from transformers import PreTrainedTokenizerBase
 from greek.dataset.dataset import AwesomeAlignDataset
 from greek.model.model import get_collate_fn
@@ -52,10 +52,11 @@ class AwesomeAlignDatasetLoaders:
         # self.test_loader = # this must have lables, and you are expected to get out the AER metric. Could also record the loss from the unsupervised objective losses.
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
+        return DataLoader(self.train_dataset, sampler=RandomSampler(self.train_dataset), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
+        # return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
     
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
+        return DataLoader(self.val_dataset, sampler=RandomSampler(self.val_dataset), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
     
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device) 

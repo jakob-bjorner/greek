@@ -85,14 +85,34 @@ SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.t
                                     {"override /dataset@trainer.datasetloaders.val_dataset": "JaEnSupervisedAwesomeAlignDatasetTest"}],
                        "trainer": {"datasetloaders":{"batch_size": 8},
                                    "max_epochs": 5,
+                                   "model": {"train_supervised": True},
                                    "get_optimizer": {"lr": 1e-4},
-                                   "log_every_n_steps": 20,
+                                   "log_every_n_steps": 10,
                                    "val_every_n_steps": 100},
                        "run_type": "supervised"}
 cs.store(name="SupervisedRunConfig", node=SupervisedRunConfig, group="run_modifier", package="_global_")
-# # TODO: how do I create debug configs, which have these modifiers by default?
-# OfflineDebugRunConfig = {"defaults": [{"run_modifier": ["OfflineRunConfig", "DebugRunConfig"]}]} 
-# cs.store(name="OfflineDebugRunConfig", node=OfflineDebugRunConfig, group="run_modifier", package="_global_")
+
+ShortTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnUnsupervisedAwesomeAlignDatasetTraining"},
+                                    {"override /dataset@trainer.datasetloaders.val_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"}],
+                       "trainer": {"datasetloaders": {"batch_size": 8},
+                                #    "max_epochs": 5,
+                                #    "model": {"train_so": True},
+                                   "max_steps": 20000,
+                                   "get_optimizer": {"lr": 2e-5},
+                                   "log_every_n_steps": 10,
+                                   "val_every_n_steps": 1000},
+                       "run_type": "short_train"}
+cs.store(name="ShortTrainRunConfig", node=ShortTrainRunConfig, group="run_modifier", package="_global_")
+
+ShortTrainSORunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"]}],
+                       "trainer":  {"model": {"train_so": True}},
+                       "run_type": "short_train_so"}
+cs.store(name="ShortTrainSORunConfig", node=ShortTrainSORunConfig, group="run_modifier", package="_global_")
+
+ShortTrainTLMRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"]}], # for some reason run_modifier must be a list.
+                       "trainer":  {"model": {"train_tlm": True}},
+                       "run_type": "short_train_tlm"}
+cs.store(name="ShortTrainTLMRunConfig", node=ShortTrainTLMRunConfig, group="run_modifier", package="_global_")
 
 
 
@@ -110,7 +130,7 @@ def my_app(cfg: RunConfig) -> None:
 
     cfg.node_name = os.getenv("SLURMD_NODENAME", "NO_NODE_NAME_FOUND")
     cfg.output_dir = HydraConfig.get().runtime.output_dir
-    cfg.trainer.logger.name = f"{cfg.run_type}_ep={cfg.trainer.max_epochs}_bs={cfg.trainer.datasetloaders.batch_size}"
+    cfg.trainer.logger.name = f"{cfg.run_type}_ep={cfg.trainer.max_epochs}_bs={cfg.trainer.datasetloaders.batch_size}_lr={cfg.trainer.get_optimizer.lr}"
 
     isMultirun = "num" in HydraConfig.get().job # type: ignore # for implicit debugging when launching a job without -m.
     # cfg.datasetloaders.num_workers =  3 if not isMultirun else HydraConfig.get().launcher.cpus_per_task - 3

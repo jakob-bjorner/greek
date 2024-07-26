@@ -8,6 +8,8 @@ from torch.nn.utils.rnn import pad_sequence
 from greek.dataset.dataset import AwesomeAlignDatasetReturn
 from collections import UserDict
 # collate function is deeply related to how the train function works, so I will define them in the same place.
+from transformers.models.bert.modeling_bert import BertForMaskedLM
+from transformers import PreTrainedTokenizerBase
 
 
 @dataclass
@@ -32,30 +34,25 @@ class CollateFnReturn:
         tree_map(self.__dict__)
         return self
                 
-
-
 class DummyEncoder(nn.Module):
     def __init__(self):
         super().__init__()
     def forward(self, x):
         return x.mean()
 
-
 class BaseTextAligner(nn.Module):
     def __init__(self):
         super().__init__()
         pass
-
     @abstractmethod
     def forward(self, x):
         raise NotImplementedError()
-
     @abstractmethod
     def get_aligned_word(self, inputs_src, inputs_tgt):
         raise NotImplementedError()
 
 @dataclass
-class AwesomeAlignerValReturn:
+class AwesomeAlignerValMetrics:
     total_num_elements: int = 0
     data: Dict = field(default_factory=dict)
     def update(self, other: Dict):
@@ -81,12 +78,12 @@ class AwesomeAlignerValReturn:
         aggregate_metrics = dict()
 
         for key in self.data.keys():
-            if key not in ["loss_per_batch", "guesses_made_in_possible", "guesses_made", "num_sure", "guesses_made_in_sure"]:
+            if "loss_per_batch" in key:
+                aggregate_metrics["avg_" + key.removesuffix("_per_batch")] = self.data[key] / self.total_num_elements
+            elif key not in ["guesses_made_in_possible", "guesses_made", "num_sure", "guesses_made_in_sure"]:
                 aggregate_metrics["avg_" + key] = self.data[key] / self.total_num_elements
-
-        aggregate_metrics["avg_loss"] = self.data["loss_per_batch"] / self.total_num_elements
         aggregate_metrics["total_num_elements"] = self.total_num_elements
-        
+
         aggregate_metrics["Precision"] = self.data["guesses_made_in_possible"] / self.data["guesses_made"]
         aggregate_metrics["Recall"] = self.data["guesses_made_in_sure"] / self.data["num_sure"]
         aggregate_metrics["AER"] = 1 - ((self.data["guesses_made_in_possible"] + self.data["guesses_made_in_sure"]) / (self.data["guesses_made"] + self.data["num_sure"]))
@@ -95,12 +92,19 @@ class AwesomeAlignerValReturn:
 
         
 class AwesomeAligner(BaseTextAligner):
-    def __init__(self, maskedlm: nn.Module, device: str, layer_number: int, threshold: float):
+    def __init__(self, maskedlm: nn.Module, tokenizer: PreTrainedTokenizerBase, device: str, layer_number: int, threshold: float, train_supervised: bool, train_so: bool, train_psi: bool, train_mlm: bool, train_tlm: bool, mlm_probability: float):
         super().__init__()
         self.maskedlm = maskedlm.to(device) # for some models you can initialize them on the device. Not bert sadly.
+        self.tokenizer = tokenizer
+        self.device = device
         self.layer_number = layer_number
         self.threshold = threshold
-        self.device = device
+        self.train_supervised = train_supervised
+        self.train_so = train_so
+        self.train_psi = train_psi
+        self.train_mlm = train_mlm
+        self.train_tlm = train_tlm
+        self.mlm_probability = mlm_probability
         # the per encoder way to get layer hidden rep will be different. 
         # Some could possibly be achieved by the forward hook, others through what awesomealign used (rewriting the encode function to accept a layer parameter)
     
@@ -108,35 +112,76 @@ class AwesomeAligner(BaseTextAligner):
         pass
 
 
-    def training_step(self, batch: CollateFnReturn):
+    def training_step(self, batch: CollateFnReturn, is_val=False):
         # a dict is chosen here for our return type because most of the metrics we just want to treat uniformly, and ease of adding values is important. Type safety not so much so.
-
+        token_alignment = None # allows for alignments to be gotten from various methods if some loss function must already produce them.
         losses = dict()
-        supervised_loss_and_label_guesses_dict = self.get_supervised_training_loss(batch)
-        losses["loss_per_batch"] = supervised_loss_and_label_guesses_dict['loss_per_batch']
-        # then we calculate prec_recall_aer_coverage (could make this optional if costs a bunch, but should be a good signal)
-        prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(supervised_loss_and_label_guesses_dict["src_tgt_softmax"],
-                                                               supervised_loss_and_label_guesses_dict["tgt_src_softmax"],
-                                                               batch.alignment_construction_params["bpe2word_map_src"],
-                                                               batch.alignment_construction_params["bpe2word_map_tgt"],
-                                                               batch.alignment_construction_params["gold_possible_word_alignments"],
-                                                               batch.alignment_construction_params["gold_sure_word_alignments"],
-                                                               )
-        losses.update(prec_recall_aer_coverage_partial_metrics)
-        return losses
+        if self.train_supervised:
+            supervised_loss_and_label_guesses_dict = self.get_supervised_training_loss(batch)
+            if not is_val:
+                supervised_loss_and_label_guesses_dict['loss_per_batch'].mean().backward()
+            losses["supervised_loss_per_batch"] = supervised_loss_and_label_guesses_dict['loss_per_batch'].detach()
+            # then we calculate prec_recall_aer_coverage (could make this optional if costs a bunch, but should be a good signal)
+            token_alignment = supervised_loss_and_label_guesses_dict["token_alignment"]
 
-    def get_overall_loss(self, batch: CollateFnReturn):
-        raise NotImplementedError()
+            prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(
+                                                            token_alignment,
+                                                            batch.alignment_construction_params["bpe2word_map_src"],
+                                                            batch.alignment_construction_params["bpe2word_map_tgt"],
+                                                            batch.alignment_construction_params["gold_possible_word_alignments"],
+                                                            batch.alignment_construction_params["gold_sure_word_alignments"],
+                                                            )
+            losses.update(prec_recall_aer_coverage_partial_metrics)
+        
+        if self.train_so: # TODO: fix self training. it doesn't replicate the result of training on just the so objective on the original repo. Results just degrade. 
+            so_loss_and_label_guesses_dict = self.get_so_loss(batch)
+            if not is_val:
+                so_loss_and_label_guesses_dict['loss_per_batch'].mean().backward()
+            losses["so_loss_per_batch"] = so_loss_and_label_guesses_dict['loss_per_batch'].detach()
+            token_alignment = so_loss_and_label_guesses_dict["token_alignment"]
+
+        if self.train_tlm:
+            tlm_loss_dict = self.get_tlm_loss(batch, is_val)
+            # backward is done in this function, as multiple permutations of src tgt and tgt src and maskings occur.
+            batch_size = batch.examples_srctgt.size(0)
+            losses["tlm_loss_per_batch"] = tlm_loss_dict["loss"].expand(batch_size) # this necessary for easier metric logging in validation loop.
+
+        if is_val and batch.alignment_construction_params["gold_possible_word_alignments"] is not None:
+            if token_alignment is None:
+                token_alignment, *_ = self.get_token_alignments_and_src_tgt_lens(batch) # name, *var = exp means I deconstruct a tuple, and only take the first element.
+            prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(
+                                                            token_alignment,
+                                                            batch.alignment_construction_params["bpe2word_map_src"],
+                                                            batch.alignment_construction_params["bpe2word_map_tgt"],
+                                                            batch.alignment_construction_params["gold_possible_word_alignments"],
+                                                            batch.alignment_construction_params["gold_sure_word_alignments"],
+                                                            )
+            losses.update(prec_recall_aer_coverage_partial_metrics)
+        batch_size = batch.examples_srctgt.size(0)
+        losses["loss_per_batch"] = sum((v if "loss_per_batch" in k else 0 for k, v in losses.items()), start=torch.zeros(batch_size, dtype=torch.float32, device=self.device))
+        return losses
 
     def get_so_loss(self, batch: CollateFnReturn):
         # self-training objective loss
-        pass
+        with torch.no_grad(): # must be done in two steps to prevent dropout on the self guide creation.
+            was_training = self.training
+            self.eval()
+            token_alignment, *_ = self.get_token_alignments_and_src_tgt_lens(batch)
+            bpe2word_map_src = batch.alignment_construction_params["bpe2word_map_src"]
+            bpe2word_map_tgt = batch.alignment_construction_params["bpe2word_map_tgt"]
 
+            word_level_alignments = self.get_word_alignment_from_token_alignment(token_alignment, bpe2word_map_src, bpe2word_map_tgt)
+            token_level_alignment_mat_self_guide = self.construct_token_level_alignment_mat_from_word_level_alignment_list(word_level_alignments, 
+                                                                                                                        src_len=token_alignment.size(1), 
+                                                                                                                        tgt_len=token_alignment.size(2), 
+                                                                                                                        bpe2word_map_src=bpe2word_map_src, 
+                                                                                                                        bpe2word_map_tgt=bpe2word_map_tgt)
+            self.train(was_training)
+        _, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt = self.get_token_alignments_and_src_tgt_lens(batch)
+        loss_per_batch = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_self_guide, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt)
+        return {"loss_per_batch": loss_per_batch, "token_alignment": token_alignment}
 
-    def get_supervised_training_loss(self, batch: CollateFnReturn):
-        # get labels from the word level alignments passed in.
-        # get the alignments from the underlying encoder model,
-        # (support superso... later)
+    def get_token_alignments_and_src_tgt_lens(self, batch: CollateFnReturn):
         PAD_ID = 0
         CLS_ID = 101
         SEP_ID = 102
@@ -145,28 +190,40 @@ class AwesomeAligner(BaseTextAligner):
         alignment_scores = (src_hidden_states @ tgt_hidden_states.transpose(-1,-2))
         src_tgt_mask = ((batch.examples_tgt == CLS_ID) | (batch.examples_tgt == SEP_ID) | (batch.examples_tgt == PAD_ID)).to(self.device)
         tgt_src_mask = ((batch.examples_src == CLS_ID) | (batch.examples_src == SEP_ID) | (batch.examples_src == PAD_ID)).to(self.device)
-        len_src = (1 - src_tgt_mask.float()).sum(1)
-        len_tgt = (1 - tgt_src_mask.float()).sum(1)
-        src_tgt_mask = (src_tgt_mask * torch.finfo(torch.float32).min)[:, None, :].to(self.device)
-        tgt_src_mask = (tgt_src_mask * torch.finfo(torch.float32).min)[:, :, None].to(self.device)
-        # src_tgt_softmax: how the source aligns to the target
+        len_src = (1 - tgt_src_mask.float()).sum(1)
+        len_tgt = (1 - src_tgt_mask.float()).sum(1)
+        small_val = torch.finfo(torch.float32).min
+        src_tgt_mask = (src_tgt_mask * small_val)[:, None, :].to(self.device)
+        tgt_src_mask = (tgt_src_mask * small_val)[:, :, None].to(self.device)
+        # src_tgt_softmax: how the source aligns to the target (softmax across the tgt words for one src word sum to one.)
         src_tgt_softmax = torch.softmax(alignment_scores + src_tgt_mask, dim=-1)
         tgt_src_softmax = torch.softmax(alignment_scores + tgt_src_mask, dim=-2)
+        token_alignment = (src_tgt_softmax > self.threshold) * (tgt_src_softmax > self.threshold)
+        return token_alignment, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt
 
+    def get_supervised_training_loss(self, batch: CollateFnReturn):
+        # get labels from the word level alignments passed in.
+        # get the alignments from the underlying encoder model,
+        # (support superso... later)
+        token_alignment, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt = self.get_token_alignments_and_src_tgt_lens(batch)
         token_level_alignment_mat_labels = self.construct_token_level_alignment_mat_from_word_level_alignment_list(**batch.alignment_construction_params)
         # div by len is default for now:
         # note: in their implementation of div by len I think they have swapped the src and tgt lens. note on this note: I think their div by len is actually right nvm.
         # turns out flatten.sum isn't significantly slower on mps or cpu than .sum((1,2))
+        per_batch_loss = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_labels, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt)
+        return {"loss_per_batch": per_batch_loss, "token_alignment": token_alignment}
+
+    def get_per_batch_loss_on_token_alignments(self, token_level_alignment_mat_labels, src_tgt_softmax, tgt_src_softmax, len_src, len_tgt):
         per_batch_loss = -(token_level_alignment_mat_labels * src_tgt_softmax).flatten(1).sum(1) / len_src \
              - (token_level_alignment_mat_labels * tgt_src_softmax).flatten(1).sum(1) / len_tgt
-        return {"loss_per_batch": per_batch_loss, "src_tgt_softmax": src_tgt_softmax, "tgt_src_softmax": tgt_src_softmax}
-    
+        return per_batch_loss
+
     def construct_token_level_alignment_mat_from_word_level_alignment_list(self, gold_possible_word_alignments, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
         # TODO: remove kwargs and clean up the difference between true labels and the self training labels.
         device = 'cpu' # there many small operations, better to do these on the cpu first, and then move them to gpu 10% speed up in old method, but 50% for my code because I have to create tensors.
         batch_size = len(gold_possible_word_alignments)
         token_level_alignment_mat = torch.zeros((batch_size, src_len, tgt_len), device=device)
-        # I rewrote the loop here, but it is less readable, and only causes a 10% speedup. 
+        # I rewrote the loop here, sadly it is less readable, and only causes a 10% speedup. keeping it tho.
         for i in range(batch_size):
             gold_possible_word_alignment = gold_possible_word_alignments[i]
             bpe2word_map_src_i = torch.tensor(bpe2word_map_src[i], device=device)
@@ -177,9 +234,8 @@ class AwesomeAligner(BaseTextAligner):
         return token_level_alignment_mat.to(self.device)
 
     def get_encoder_hidden_state(self, input_ids):
-        from transformers.models.bert.modeling_bert import BertForMaskedLM
         assert isinstance(self.maskedlm, BertForMaskedLM), "this method is specific to the BERTForMaskedLM from huggingface"
-        
+
         activation = dict()
         activation_name = f"layer_{self.layer_number}_activation"
         def hook(module, input, output):
@@ -189,7 +245,7 @@ class AwesomeAligner(BaseTextAligner):
         # run model
         PAD_ID = 0
         attention_mask = (input_ids != PAD_ID).to(self.device)
-        self.maskedlm.bert(input_ids, attention_mask)
+        self.maskedlm.bert(input_ids, attention_mask=attention_mask)
 
         hook_handle.remove()
         return activation[activation_name]
@@ -205,9 +261,74 @@ class AwesomeAligner(BaseTextAligner):
     def get_mlm_loss(self, batch: CollateFnReturn):
         raise NotImplementedError()
         
-    def get_tlm_loss(self, batch: CollateFnReturn):
-        raise NotImplementedError()
+    def get_tlm_loss(self, batch: CollateFnReturn, is_val):
+        PAD_ID = 0
+
+        # from transformers.models.bert import BertForMaskedLM
+        loss = torch.tensor(0., device=self.device)
         
+        rand_ids = [0, 1]
+        # if not args.train_tlm_full:
+        #     rand_ids = [int(random.random() > 0.5)]
+        rand_ids = [int(random.random() > 0.5)]
+        for rand_id in rand_ids:
+            if rand_id == 0:
+                select_srctgt = batch.examples_srctgt
+                select_langid = batch.langid_srctgt
+            else:
+                select_srctgt = batch.examples_tgtsrc
+                select_langid = batch.langid_tgtsrc
+            for lang_id in [1, 2]:
+                with torch.no_grad():
+                    inputs_srctgt, labels_srctgt = self.mask_tokens(select_srctgt, select_langid, lang_id)
+                loss_i = self.maskedlm(input_ids=inputs_srctgt, attention_mask=(inputs_srctgt != PAD_ID).to(self.device), labels=labels_srctgt).loss
+                if not is_val:
+                    loss_i.backward()
+                loss += loss_i.detach()
+        return {"loss": loss}
+
+    def mask_tokens(self, inputs: torch.Tensor, langid_mask=None, lang_id=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
+        """
+        MASK_ID = 103
+        if self.tokenizer.mask_token is None:
+            raise ValueError(
+                "This tokenizer does not have a mask token which is necessary for masked language modeling. Remove the --mlm flag if you want to use this tokenizer."
+            )
+        mask_type = torch.bool
+
+        labels = inputs.clone()
+        # We sample a few tokens in each sequence for masked-LM training (with probability args.mlm_probability defaults to 0.15 in Bert/RoBERTa)
+        probability_matrix = torch.full(labels.shape, self.mlm_probability, device=self.device)
+        special_tokens_mask = [
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
+        ]
+        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=mask_type, device=self.device), value=0.0)
+        if self.tokenizer._pad_token is not None:
+            padding_mask = labels.eq(self.tokenizer.pad_token_id) # type: ignore
+            probability_matrix.masked_fill_(padding_mask, value=0.0)
+
+        if langid_mask is not None:
+            padding_mask = langid_mask.eq(lang_id)
+            probability_matrix.masked_fill_(padding_mask, value=0.0)
+            
+        masked_indices = torch.bernoulli(probability_matrix).to(mask_type)
+        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8, device=self.device)).to(mask_type) & masked_indices
+        inputs[indices_replaced] = MASK_ID
+
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5, device=self.device)).to(mask_type) & masked_indices & ~indices_replaced
+        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long, device=self.device)
+        inputs[indices_random] = random_words[indices_random]
+
+        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        return inputs, labels
+
+
     def get_co_loss(self, batch: CollateFnReturn):
         # consistency optimization loss, and this will likely be combined with so_loss as done in awesome-align.
         raise NotImplementedError() 
@@ -217,7 +338,7 @@ class AwesomeAligner(BaseTextAligner):
         # I will delay writing this. 
         raise NotImplementedError() 
 
-    def get_word_prec_recall_aer_coverage_partial_metrics(self, src_tgt_softmax: torch.Tensor, tgt_src_softmax: torch.Tensor, bpe2word_map_src, bpe2word_map_tgt, gold_possible_word_alignments, gold_sure_word_alignments):
+    def get_word_prec_recall_aer_coverage_partial_metrics(self, token_alignment: torch.Tensor, bpe2word_map_src, bpe2word_map_tgt, gold_possible_word_alignments, gold_sure_word_alignments):
         # computes over a batch based on predictions, returns relevant information to be eventually aggragated
         # prec_recall_aer_coverage
         # need to get the prec, recall, and aer metrics. This is 
@@ -225,8 +346,7 @@ class AwesomeAligner(BaseTextAligner):
         # recall: #sure correct guesses/possible correct = (|H \intersection S| / |S|)
 
         # get the token level alignment
-        batch_size = src_tgt_softmax.size(0)
-        token_alignment = (src_tgt_softmax > self.threshold) * (tgt_src_softmax > self.threshold)
+        batch_size = token_alignment.size(0)
         word_level_alignments = self.get_word_alignment_from_token_alignment(token_alignment, bpe2word_map_src, bpe2word_map_tgt)
 
         num_sure = 0
@@ -266,7 +386,7 @@ class AwesomeAligner(BaseTextAligner):
 
     def validation_step(self, batch: CollateFnReturn):
         # both get the loss on the data, and if there are labels get the label assignment error, aer and coverage related metrics.
-        losses = self.training_step(batch)
+        losses = self.training_step(batch, is_val=True)
         return losses
     def test_step(self, batch: CollateFnReturn):
         return self.val_step(batch)
@@ -274,7 +394,7 @@ class AwesomeAligner(BaseTextAligner):
         pass
     # def configure_optimizers(self): 
     #     # pytorch lightning does this, but I don't get it, so will just do the init of the optimizer and scheduler inside the trainer.
-    #     # update: I think I should have this now. the model is related to how it optimizes itself. It knows which parameters of itself 
+    #     # update: I think I should have this now. the model is related to how it optimizes itself. It knows which parameters 
     #     #         are meant to have different learning rates and whatnot.
     #     pass
 

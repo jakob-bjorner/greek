@@ -17,6 +17,7 @@ class WandBLogger(BaseLogger):
     # in the future might want to distinguish between what I pass into the __init__ of the logger and what I pass into the init() of wandb. 
     # Something like higher level options to resume runs or add data to old runs...
     project: str = "greek"
+    dir: str = "${hydra:runtime.output_dir}"
     _target_: str = "greek.logger.logger.WandBLogger"
 
 

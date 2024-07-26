@@ -12,7 +12,7 @@ class OptimizerCallable:
     _target_: str = "greek.trainer.trainer.get_optimizer"
     custom: str = ""
     lr: float = 0.001
-    weight_decay: float = 0.01
+    weight_decay: float = 0.0 # this is different from default adamW which uses 0.01
     eps: float = 1e-8
     _partial_: bool = True
 ConfigStore.instance().store(name="BERTAdamW", node=OptimizerCallable(custom="BERTAdamW"), group="optimizer")
@@ -41,8 +41,9 @@ class AwesomeAlignTrainer:
     model: Aligner = MISSING
     datasetloaders: AwesomeAlignDatasetLoaders = MISSING
     logger: BaseLogger = MISSING
-    get_optimizer: Any = field(default_factory=lambda: {"lr": 2e-5})
+    get_optimizer: OptimizerCallable = MISSING
     get_scheduler: SchedulerCallable = MISSING
+    max_grad_norm: float = 1.0
     device: str = "${device}"
     max_steps: int = -1 # non negative to set a limit. Must set one of these
     max_epochs: float = -1.0 # non negative to set a limit

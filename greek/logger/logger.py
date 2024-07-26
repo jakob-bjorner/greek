@@ -17,6 +17,8 @@ class BaseLogger(ABC):
     @abstractmethod
     def log(self, log_dict, **kwargs):
         raise NotImplementedError()
+    def watch(self, *args, **kwargs):
+        pass
 
 
 class BasicPrintLogger(BaseLogger):
@@ -45,6 +47,9 @@ class WandBLogger(BaseLogger):
         return self.run
     def log(self, *args, **kwargs):
         self.wandb.log(*args, **kwargs)
+    def watch(self, *args, **kwargs):
+        self.wandb.watch(*args, **kwargs)
+
 
 
 class CustomWandBLogger(WandBLogger):

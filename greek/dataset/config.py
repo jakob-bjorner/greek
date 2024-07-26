@@ -19,9 +19,10 @@ class AwesomeAlignDataset:
 DATA_FOLDER  = os.path.abspath(os.path.join(__file__, "../../../data"))
 
 ConfigStore.instance().store(name="MultilingualUnsupervisedAwesomeAlignDatasetTraining", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_training_data/multilingual_data_nozh.src-tgt", gold_file=None), group="dataset")
+ConfigStore.instance().store(name="JaEnUnsupervisedAwesomeAlignDatasetTraining", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_training_data/jaen.src-tgt", gold_file=None), group="dataset")
 
 ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/jaen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/jaen.gold", gold_one_index=False), group="dataset")
-ConfigStore.instance().store(name="JaEnUnsupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/old/old_jaen.src-tgt", gold_file=None, gold_one_index=False), group="dataset")
+# ConfigStore.instance().store(name="JaEnUnsupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/old/old_jaen.src-tgt", gold_file=None, gold_one_index=False), group="dataset")
 
 # TODO: add support for multiple seperate eval and test sets, so can train all at once with a fraction of all languages and test quickly in one command.
 ConfigStore.instance().store(name="DeEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/deen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/deen.gold"), group="dataset")
