@@ -81,19 +81,19 @@ DebugRunConfig = {"trainer": {"datasetloaders":{"num_workers": 0}},
                       "run":{"dir":  "greek_runs/$debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"}}}
 cs.store(name="DebugRunConfig", node=DebugRunConfig, group="run_modifier", package="_global_")
 
-SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"},
-                                    {"override /dataset@trainer.datasetloaders.val_dataset": "JaEnSupervisedAwesomeAlignDatasetTest"}],
+SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnSupervisedAwesomeAlignDatasetTraining"},
+                                    {"override /datasetmap@trainer.datasetloaders.val_datasets": "JaEnSupervisedAwesomeAlignDatasetsMapEval"}],
                        "trainer": {"datasetloaders":{"batch_size": 8},
                                    "max_epochs": 5,
                                    "model": {"train_supervised": True},
                                    "get_optimizer": {"lr": 1e-4},
-                                   "log_every_n_steps": 10,
+                                   "log_every_n_steps": 20,
                                    "val_every_n_steps": 100},
                        "run_type": "supervised"}
 cs.store(name="SupervisedRunConfig", node=SupervisedRunConfig, group="run_modifier", package="_global_")
 
 ShortTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnUnsupervisedAwesomeAlignDatasetTraining"},
-                                    {"override /dataset@trainer.datasetloaders.val_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"}],
+                                    {"override /datasetmap@trainer.datasetloaders.val_datasets": "JaEnSupervisedAwesomeAlignDatasetsMapEval"}],
                        "trainer": {"datasetloaders": {"batch_size": 8},
                                 #    "max_epochs": 5,
                                 #    "model": {"train_so": True},
@@ -114,6 +114,31 @@ ShortTrainTLMRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"
                        "run_type": "short_train_tlm"}
 cs.store(name="ShortTrainTLMRunConfig", node=ShortTrainTLMRunConfig, group="run_modifier", package="_global_")
 
+ShortTrainMLMRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"]}], # for some reason run_modifier must be a list.
+                       "trainer":  {"model": {"train_mlm": True}},
+                       "run_type": "short_train_mlm"}
+cs.store(name="ShortTrainMLMRunConfig", node=ShortTrainMLMRunConfig, group="run_modifier", package="_global_")
+
+ShortTrainPSIRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"]}], # for some reason run_modifier must be a list.
+                       "trainer":  {"model": {"train_psi": True}},
+                       "run_type": "short_train_psi"}
+cs.store(name="ShortTrainPSIRunConfig", node=ShortTrainPSIRunConfig, group="run_modifier", package="_global_")
+
+FullTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.train_dataset": "MultilingualUnsupervisedAwesomeAlignDatasetTraining"},
+                                    {"override /datasetmap@trainer.datasetloaders.val_datasets": "nozhSupervisedAwesomeAlignDatasetsMapEval"}],
+                       "trainer": {"datasetloaders": {"batch_size": 8},
+                                #    "max_epochs": 5,
+                                   "model": {"train_so": True,
+                                             "train_psi": True,
+                                             "train_mlm": True,
+                                             "train_tlm": True,
+                                             "train_tlm_full": True},
+                                   "max_steps": 40000,
+                                   "get_optimizer": {"lr": 2e-5},
+                                   "log_every_n_steps": 100,
+                                   "val_every_n_steps": 2000},
+                       "run_type": "full_train"}
+cs.store(name="FullTrainRunConfig", node=FullTrainRunConfig, group="run_modifier", package="_global_")
 
 
 @hydra_main(version_base=None, config_name='RunConfig')
@@ -130,7 +155,8 @@ def my_app(cfg: RunConfig) -> None:
 
     cfg.node_name = os.getenv("SLURMD_NODENAME", "NO_NODE_NAME_FOUND")
     cfg.output_dir = HydraConfig.get().runtime.output_dir
-    cfg.trainer.logger.name = f"{cfg.run_type}_ep={cfg.trainer.max_epochs}_bs={cfg.trainer.datasetloaders.batch_size}_lr={cfg.trainer.get_optimizer.lr}"
+    cfg.trainer.logger.name = f"{cfg.run_type}_maxCvgTemp={cfg.trainer.model.max_softmax_temperature}_cvgW={cfg.trainer.model.coverage_weight}_cvgType={cfg.trainer.model.coverage_encouragement_type}_lr={cfg.trainer.get_optimizer.lr}_cosSim={cfg.trainer.model.cosine_sim}_simTemp={cfg.trainer.model.sim_func_temp}_thresh={cfg.trainer.model.threshold}_divByLen={cfg.trainer.model.div_by_len}_entropyLoss={cfg.trainer.model.entropy_loss}"
+    # import ipdb; ipdb.set_trace()
 
     isMultirun = "num" in HydraConfig.get().job # type: ignore # for implicit debugging when launching a job without -m.
     # cfg.datasetloaders.num_workers =  3 if not isMultirun else HydraConfig.get().launcher.cpus_per_task - 3
@@ -139,7 +165,7 @@ def my_app(cfg: RunConfig) -> None:
     trainer = instantiate(cfg.trainer)
     # using with wandb.init is a hack to get wandb to create a new run for every -m sweep. otherwise it concats them to one run.
     with trainer.logger.init(config=cfg_for_logging) as run:
-        trainer.fit()
+        trainer.fit(cfg)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from omegaconf import MISSING
 from hydra.core.config_store import ConfigStore
-from typing import List, Any 
+from typing import List, Any, Optional
 
 @dataclass
 class BasicMaskedLM:
@@ -35,7 +35,17 @@ class Aligner:
     train_psi: bool = False
     train_mlm: bool = False
     train_tlm: bool = False
+    train_tlm_full: bool = False
     mlm_probability: float = 0.15 # default for bert/roberta
+
+    entropy_loss: bool = False
+    div_by_len: bool = True
+    cosine_sim: bool = False
+    sim_func_temp: float = 1.0 # 5 now 1/25=0.04, 10 now 1/100=0.01
+    coverage_encouragement_type: str = "mse_softmax" # eventually with schedules, and other types "max_softmax"
+    max_softmax_temperature: float = 1.0
+    coverage_weight: float = 0.0
+
     # train_co
     _target_: str = MISSING
 

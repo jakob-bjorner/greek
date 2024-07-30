@@ -155,6 +155,29 @@ class AwesomeAlignDataset(Dataset[AwesomeAlignDatasetReturn]):
             example.sure_labels = sure_labels
             example.possible_labels = possible_labels
         return example
+
+class AwesomeAlignDatasetsMap:
+    def __init__(self, enfr_dataset, deen_dataset, roen_dataset, jaen_dataset):
+        self.enfr_dataset = enfr_dataset
+        self.deen_dataset = deen_dataset
+        self.roen_dataset = roen_dataset
+        self.jaen_dataset = jaen_dataset
+        self.map = dict()
+        if enfr_dataset is not None:
+            self.map["enfr"] = enfr_dataset
+        if roen_dataset is not None:
+            self.map["roen"] = roen_dataset
+        if deen_dataset is not None:
+            self.map["deen"] = deen_dataset
+        if jaen_dataset is not None:
+            self.map["jaen"] = jaen_dataset
+    def get(self, dataset_name):
+        return self.map[dataset_name]
+    def keys(self):
+        return self.map.keys()
+    
+
+    
     
 # the dataset handles the data, and therefor is highly related to several 
 # implementation details which stem from where you would tokenize the data or perform other data processing opterations.

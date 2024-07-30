@@ -49,6 +49,7 @@ class AwesomeAlignTrainer:
     max_epochs: float = -1.0 # non negative to set a limit
     log_every_n_steps: int = 500
     val_every_n_steps: int = 2000
+    output_dir: str = "${hydra:runtime.output_dir}"
     # seed: int = 0 # for numbers 0 or lower, the seed is random. This is for easy testing.
 ConfigStore.instance().store(name="AwesomeAlignTrainer", node=AwesomeAlignTrainer, group="trainer")
 

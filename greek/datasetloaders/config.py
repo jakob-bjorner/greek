@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from omegaconf import MISSING
 from hydra.core.config_store import ConfigStore
 from typing import Any, List, Dict, Optional
-from greek.dataset.config import AwesomeAlignDataset
+from greek.dataset.config import AwesomeAlignDataset, AwesomeAlignDatasetsMap
 
 @dataclass
 class HFTokenizer:
@@ -23,8 +23,8 @@ class AwesomeAlignDatasetLoaders:
         # TODO: figure out how to make the tokenizer only be instantiated once, and have it passed to all objects as the same instance.
         {"/tokenizer@_global_.tokenizer": "BERTTokenizer"},
         {"/dataset@train_dataset": "MultilingualUnsupervisedAwesomeAlignDatasetTraining"},
-        {"/dataset@val_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"},
-        {"/dataset@test_dataset": "JaEnSupervisedAwesomeAlignDatasetTest"},
+        {"/datasetmap@val_datasets": "nozhSupervisedAwesomeAlignDatasetsMapEval"},
+        {"/datasetmap@test_datasets": "nozhSupervisedAwesomeAlignDatasetsMapTest"},
         # "val_dataset", # the val dataset has the same possible ideas as the test dataset
         # "test_dataset", # the test dataset should be one per language? so really should be a potential list of tests to run.
         "_self_",
@@ -32,8 +32,8 @@ class AwesomeAlignDatasetLoaders:
     _target_: str = "greek.datasetloaders.datasetloaders.AwesomeAlignDatasetLoaders"
     tokenizer: Any = "${tokenizer}"
     train_dataset: AwesomeAlignDataset = MISSING
-    val_dataset: AwesomeAlignDataset = MISSING
-    test_dataset: AwesomeAlignDataset = MISSING
+    val_datasets: AwesomeAlignDatasetsMap = MISSING
+    test_datasets: AwesomeAlignDatasetsMap = MISSING
     batch_size: int = 8
     num_workers: int = 3 # change this for debugging.
     pin_memory: bool = True

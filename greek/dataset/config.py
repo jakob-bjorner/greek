@@ -15,17 +15,46 @@ class AwesomeAlignDataset:
     
     # TODO: mess with using different weightings on possible aligns in the supervised setting or something like this?
     ignore_possible_alignments: bool = False 
+@dataclass
+class AwesomeAlignDatasetsMap:
+    _target_: str = "greek.dataset.dataset.AwesomeAlignDatasetsMap"
+    defaults: List[Any] = field(default_factory=lambda: [
+        "_self_",
+        ])
+    enfr_dataset: Optional[AwesomeAlignDataset] = None
+    deen_dataset: Optional[AwesomeAlignDataset] = None
+    roen_dataset: Optional[AwesomeAlignDataset] = None
+    jaen_dataset: Optional[AwesomeAlignDataset] = None
 
 DATA_FOLDER  = os.path.abspath(os.path.join(__file__, "../../../data"))
 
 ConfigStore.instance().store(name="MultilingualUnsupervisedAwesomeAlignDatasetTraining", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_training_data/multilingual_data_nozh.src-tgt", gold_file=None), group="dataset")
 ConfigStore.instance().store(name="JaEnUnsupervisedAwesomeAlignDatasetTraining", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_training_data/jaen.src-tgt", gold_file=None), group="dataset")
+ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetTraining", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_training_data/jaen_train_past100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_training_data/jaen_train_past100.gold", gold_one_index=False), group="dataset")
 
-ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/jaen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/jaen.gold", gold_one_index=False), group="dataset")
+ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/jaen_eval_first100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/jaen_eval_first100.gold", gold_one_index=False), group="dataset")
+ConfigStore.instance().store(name="DeEnSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/deen_eval_first100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/deen_eval_first100.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="EnFrSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/enfr_eval_first100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/enfr_eval_first100.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="RoEnSupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/roen_eval_first50.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_eval_data/roen_eval_first50.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="nozhSupervisedAwesomeAlignDatasetsMapEval", node=AwesomeAlignDatasetsMap(defaults=["_self_",
+                                                                                                                      {"/dataset@jaen_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"}, 
+                                                                                                                      {"/dataset@deen_dataset": "DeEnSupervisedAwesomeAlignDatasetEval"},
+                                                                                                                      {"/dataset@enfr_dataset": "EnFrSupervisedAwesomeAlignDatasetEval"},
+                                                                                                                      {"/dataset@roen_dataset": "RoEnSupervisedAwesomeAlignDatasetEval"}]), group="datasetmap")
+ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetsMapEval", node=AwesomeAlignDatasetsMap(defaults=["_self_", {"/dataset@jaen_dataset": "JaEnSupervisedAwesomeAlignDatasetEval"}]), group="datasetmap")
+
 # ConfigStore.instance().store(name="JaEnUnsupervisedAwesomeAlignDatasetEval", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_eval_data/old/old_jaen.src-tgt", gold_file=None, gold_one_index=False), group="dataset")
 
 # TODO: add support for multiple seperate eval and test sets, so can train all at once with a fraction of all languages and test quickly in one command.
-ConfigStore.instance().store(name="DeEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/deen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/deen.gold"), group="dataset")
-ConfigStore.instance().store(name="EnFrSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/enfr.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/enfr.gold"), group="dataset")
-ConfigStore.instance().store(name="RoEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/roen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/roen.gold"), group="dataset")
+ConfigStore.instance().store(name="DeEnSupervisedAwesomeAlignDatasetTestFull", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/deen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/deen.gold"), group="dataset")
+ConfigStore.instance().store(name="EnFrSupervisedAwesomeAlignDatasetTestFull", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/enfr.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/enfr.gold"), group="dataset")
+ConfigStore.instance().store(name="RoEnSupervisedAwesomeAlignDatasetTestFull", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/roen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/roen.gold"), group="dataset")
 ConfigStore.instance().store(name="JaEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/jaen.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/jaen.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="DeEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/deen_test_past100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/deen_test_past100.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="EnFrSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/enfr_test_past100.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/enfr_test_past100.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="RoEnSupervisedAwesomeAlignDatasetTest", node=AwesomeAlignDataset(src_tgt_file=f"{DATA_FOLDER}/awesome_test_examples/roen_test_past50.src-tgt", gold_file=f"{DATA_FOLDER}/awesome_test_examples/roen_test_past50.gold", gold_one_index=True), group="dataset")
+ConfigStore.instance().store(name="nozhSupervisedAwesomeAlignDatasetsMapTest", node=AwesomeAlignDatasetsMap(defaults=["_self_",
+                                                                                                                      {"/dataset@jaen_dataset": "JaEnSupervisedAwesomeAlignDatasetTest"},
+                                                                                                                      {"/dataset@deen_dataset": "DeEnSupervisedAwesomeAlignDatasetTest"},
+                                                                                                                      {"/dataset@enfr_dataset": "EnFrSupervisedAwesomeAlignDatasetTest"},
+                                                                                                                      {"/dataset@roen_dataset": "RoEnSupervisedAwesomeAlignDatasetTest"}]), group="datasetmap")

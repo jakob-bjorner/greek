@@ -25,3 +25,13 @@ replicate supervised training script:
 ```bash
 python run.py +run_modifier=SupervisedRunConfig
 ```
+
+https://pytorch.org/get-started/locally/
+
+then install:
+pip install python-dotenv
+pip install hydra-core
+pip install hydra-submitit-launcher --upgrade
+pip install ipython
+pip install wandb
+pip install transformers

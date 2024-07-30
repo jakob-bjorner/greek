@@ -11,6 +11,7 @@ import numpy as np
 from torch.optim import Optimizer, AdamW
 from torch.optim.lr_scheduler import LRScheduler
 import tqdm
+import os
 
 # torch.optim.lr_scheduler.ChainedScheduler()
 def get_optimizer(custom, **kwargs) -> Optimizer:
@@ -73,6 +74,7 @@ class AwesomeAlignTrainer:
                  max_epochs: float, 
                  log_every_n_steps: int, 
                  val_every_n_steps: int,
+                 output_dir: str,
                  ):
         if (max_steps < 0 and max_epochs < 0) or (max_steps >= 0 and max_epochs >= 0):
             raise InterruptedError(f"exactly one of max_steps or max_epochs be non negative, {max_epochs=}, {max_steps=}")
@@ -88,12 +90,14 @@ class AwesomeAlignTrainer:
         self.max_epochs = max_epochs
         self.log_every_n_steps = log_every_n_steps
         self.val_every_n_steps = val_every_n_steps
+        self.output_dir = output_dir
 
-    def initialize_train(self):
+    def initialize_train(self, config):
         ''' What is the initialize training model in charge of?
         this function should instantiate the model, and datsetloaders, and organize them to be used for eventual training...
         Who should be defining the collate function?
         '''
+        self.config = config
         if self.seed > 0:
             random.seed(self.seed)
             np.random.seed(self.seed)
@@ -120,13 +124,17 @@ class AwesomeAlignTrainer:
     def train_loop(self, progress_bar: tqdm.tqdm, formatted_string_postfix: str):
         self.model.train()
         for batch in self.datasetloaders.train_dataloader():
+            # #debug shit:
+            # if self.current_global_step < 39035:
+            #     self.current_global_step += 1
+            #     progress_bar.update()
+            #     continue
             batch = batch.to(self.device)
             # torch.autograd.set_detect_anomaly(True)
             # self.model.eval() # this for debugging and to remove randomness of dropout
             losses = self.model.training_step(batch)
             # each loss should be backpropped seperately. how will this work? I can make the awesome align trainer dependant on the model, and the losses...
             # will just leave it for now, and see how bad it is later.
-            # TODO: check if backpropping only the one loss is much slower.
             loss = losses["loss_per_batch"].mean()
             # loss.backward()
 
@@ -155,8 +163,8 @@ class AwesomeAlignTrainer:
             if self.current_global_step >= self.max_steps:
                 break
 
-    def fit(self):
-        self.initialize_train()
+    def fit(self, config):
+        self.initialize_train(config)
         self.validation_loop()
         formatted_string_postfix = "loss: {loss:3.5f}"
         progress_bar = tqdm.trange(self.max_steps, postfix=formatted_string_postfix.format_map({"loss": 0}))
@@ -167,34 +175,50 @@ class AwesomeAlignTrainer:
             # if we haven't already validated after the last step, then we will run validate loop.
             self.validation_loop()
         self.test_loop()
-        self.save()
+        # self.save_checkpoint()
 
     def validation_loop(self):
         with torch.no_grad():
             was_training = self.model.training
             self.model.eval()
-            # should run alignment for all languages on the val set
-            progress_bar_val_iterator: Iterable[CollateFnReturn] = tqdm.tqdm(self.datasetloaders.val_dataloader()) 
-            metric = AwesomeAlignerValMetrics()
-            for batch in progress_bar_val_iterator:
-                batch.to(self.device)
-                metric.update(self.model.validation_step(batch))
+            log_dict_total = {}
+            for dataset_name, val_dataloader in self.datasetloaders.val_dataloaders_iterator():
+                progress_bar_val_iterator: Iterable[CollateFnReturn] = tqdm.tqdm(val_dataloader, desc=f"Val_{dataset_name}") 
+                metric = AwesomeAlignerValMetrics()
+                for batch in progress_bar_val_iterator:
+                    batch.to(self.device)
+                    metric.update(self.model.validation_step(batch))
 
-            log_dict = metric.compute()
-            log_dict = {("eval_" + key): val for key, val in log_dict.items()}
-            print(log_dict, self.current_global_step)
-            self.logger.log(log_dict, step=self.current_global_step)
+                log_dict = metric.compute()
+                log_dict = {(f"eval_{dataset_name}_{key}"): val for key, val in log_dict.items()}
+                log_dict_total.update(log_dict)
+            print(log_dict_total, self.current_global_step)
+            self.logger.log(log_dict_total, step=self.current_global_step)
             self.model.train(was_training)
 
     def test_loop(self):
         # should run alignment for all languages on the test sets.
         pass
 
-    def save(self):
+    def load_checkpoint(self):
         # save_dict = {"epoch": self.epoch, "step": self.global_step}
         # save_dict.update(self.state)
         # torch.save(save_dict, f"{self.save_dir}/{self.}")
         # should I be saving just the model, or also the config which was used to create it? This is automatically saved with the model due to hydra.
         pass
+    def save_checkpoint(self, name):
+        torch.save(
+            {
+                "optimizer": self.optimizer,
+                "scheduler": self.scheduler,
+                "model": self.model,
+                "current_epoch": self.current_epoch,
+                "current_global_step": self.current_global_step,
+                "config": self.config, # must load in the datasetloaders, and other stuff probably
+            },
+            os.path.join(self.output_dir, "checkpoints", name)
+        ) 
+        # TODO: look into saving and loading partial checkpoints: https://github.com/pranav-putta/lm-nav/blob/main/lmnav/ppo_train.py#L560
+        # I particularly have to be careful about loading the config into the trainer, and get the right state loaded into the optimizer, and pick up on the same wandb log.
 
 # %%

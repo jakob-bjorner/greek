@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import PreTrainedTokenizerBase
-from greek.dataset.dataset import AwesomeAlignDataset
+from greek.dataset.dataset import AwesomeAlignDataset, AwesomeAlignDatasetsMap
 from greek.model.model import get_collate_fn
 
 # ''' constructs the eval, train, and test split of a particular dataset. Also gives the relevant tokenizer, and '''
@@ -28,15 +28,15 @@ class AwesomeAlignDatasetLoaders:
     def __init__(self, 
                  tokenizer: PreTrainedTokenizerBase, 
                  train_dataset: AwesomeAlignDataset, 
-                 val_dataset: AwesomeAlignDataset, 
-                 test_dataset: AwesomeAlignDataset, 
+                 val_datasets: AwesomeAlignDatasetsMap, 
+                 test_datasets: AwesomeAlignDatasetsMap, 
                  batch_size: int, 
                  num_workers: int, 
                  pin_memory: bool, 
                  pin_memory_device: str):
         self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
-        self.test_dataset = test_dataset
+        self.val_datasets = val_datasets
+        self.test_datasets = test_datasets
 
         # AwesomeAlignDataset(tokenizer=self.tokenizer, src_tgt_file="/Users/jakob/dev/greek/data/awesome_training_data/multilingual_data_nozh.src-tgt", gold_file=None, gold_one_index=True, ignore_possible_alignments=False)
         self.tokenizer = tokenizer # AutoTokenizer.from_pretrained("google-bert/bert-base-multilingual-cased")
@@ -55,11 +55,13 @@ class AwesomeAlignDatasetLoaders:
         return DataLoader(self.train_dataset, sampler=RandomSampler(self.train_dataset), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
         # return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
     
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, sampler=RandomSampler(self.val_dataset), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
+    def val_dataloaders_iterator(self):
+        for dataset_name in self.val_datasets.keys():
+            yield dataset_name, DataLoader(self.val_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
     
-    def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device) 
+    def test_dataloaders_iterator(self):
+        for dataset_name in self.test_datasets.keys():
+            yield dataset_name, DataLoader(self.test_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device) 
 
 
 
