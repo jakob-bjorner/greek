@@ -31,7 +31,7 @@ class AwesomeAlignDatasetLoaders:
     ])
     _target_: str = "greek.datasetloaders.datasetloaders.AwesomeAlignDatasetLoaders"
     tokenizer: Any = "${tokenizer}"
-    train_dataset: AwesomeAlignDataset = MISSING
+    train_dataset: Any = MISSING
     val_datasets: AwesomeAlignDatasetsMap = MISSING
     test_datasets: AwesomeAlignDatasetsMap = MISSING
     batch_size: int = 8

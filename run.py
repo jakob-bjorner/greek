@@ -10,6 +10,8 @@ from hydra.utils import instantiate
 import pprint
 from dotenv import load_dotenv
 import os
+import random
+import numpy as np
 from greek.init_configs import init_configs
 from greek.trainer.config import AwesomeAlignTrainer
 
@@ -61,10 +63,9 @@ class RunConfig:
     # batch_size: int = 128
     # known issue: the multirun.yaml is saved to the sweep dir, and not the subdirs, so it is not saved! (don't think I will need this to be saved tho, and makes folders easier to read)
     hydra: Any = field(default_factory=lambda: {
-        "job":{"config":{"override_dirname":{"item_sep": "_"}}},
         "sweep":{"dir": "greek_runs", 
-                 "subdir": "${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
-        "run":{"dir":  "greek_runs/${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
+                 "subdir": "${run_type}_${now:%Y-%m-%d}/${now:%H-%M-%S}_${hydra.job.num}" },
+        "run":{"dir":  "greek_runs/${run_type}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
     })
 cs.store(name="RunConfig", node=RunConfig)
 
@@ -77,9 +78,15 @@ cs.store(name="OfflineRunConfig", node=OfflineRunConfig, group="run_modifier", p
 DebugRunConfig = {"trainer": {"datasetloaders":{"num_workers": 0}},
                   "hydra": {
                       "sweep":{"dir": "greek_runs", 
-                              "subdir": "$debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
-                      "run":{"dir":  "greek_runs/$debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"}}}
+                              "subdir": "debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
+                      "run":{"dir":  "greek_runs/debug_${now:%Y-%m-%d}/${now:%H-%M-%S}"}}}
 cs.store(name="DebugRunConfig", node=DebugRunConfig, group="run_modifier", package="_global_")
+
+OverrideConfig = {"hydra": {"job":{"config":{"override_dirname":{"item_sep": "_"}}},
+                            "sweep":{"dir": "greek_runs", 
+                                    "subdir": "${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"},
+                            "run":{"dir":  "greek_runs/${hydra.job.override_dirname}_${now:%Y-%m-%d}/${now:%H-%M-%S}"}}}
+cs.store(name="OverrideConfig", node=OverrideConfig, group="run_modifier", package="_global_")
 
 SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.train_dataset": "JaEnSupervisedAwesomeAlignDatasetTraining"},
                                     {"override /datasetmap@trainer.datasetloaders.val_datasets": "JaEnSupervisedAwesomeAlignDatasetsMapEval"}],
@@ -88,7 +95,8 @@ SupervisedRunConfig = {"defaults": [{"override /dataset@trainer.datasetloaders.t
                                    "model": {"train_supervised": True},
                                    "get_optimizer": {"lr": 1e-4},
                                    "log_every_n_steps": 20,
-                                   "val_every_n_steps": 100},
+                                   "val_every_n_steps": 100,
+                                   "val_plot_every_n_steps": 200},
                        "run_type": "supervised"}
 cs.store(name="SupervisedRunConfig", node=SupervisedRunConfig, group="run_modifier", package="_global_")
 
@@ -100,7 +108,8 @@ ShortTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.
                                    "max_steps": 20000,
                                    "get_optimizer": {"lr": 2e-5},
                                    "log_every_n_steps": 10,
-                                   "val_every_n_steps": 1000},
+                                   "val_every_n_steps": 1000,
+                                   "val_plot_every_n_steps": 1000},
                        "run_type": "short_train"}
 cs.store(name="ShortTrainRunConfig", node=ShortTrainRunConfig, group="run_modifier", package="_global_")
 
@@ -124,6 +133,15 @@ ShortTrainPSIRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"
                        "run_type": "short_train_psi"}
 cs.store(name="ShortTrainPSIRunConfig", node=ShortTrainPSIRunConfig, group="run_modifier", package="_global_")
 
+ShortTrainAllRunConfig = {"defaults":  [{"/run_modifier": ["ShortTrainRunConfig"]}], # for some reason run_modifier must be a list.
+                       "trainer":  {"model": {"train_psi": True,
+                                              "train_mlm": True,
+                                              "train_tlm": True, # this doesn't have full tlm enabled, so less tlm used.
+                                              "train_so": True}},
+                       "run_type": "short_train_all"}
+cs.store(name="ShortTrainAllRunConfig", node=ShortTrainAllRunConfig, group="run_modifier", package="_global_")
+
+
 FullTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.train_dataset": "MultilingualUnsupervisedAwesomeAlignDatasetTraining"},
                                     {"override /datasetmap@trainer.datasetloaders.val_datasets": "nozhSupervisedAwesomeAlignDatasetsMapEval"}],
                        "trainer": {"datasetloaders": {"batch_size": 8},
@@ -136,7 +154,8 @@ FullTrainRunConfig = {"defaults":  [{"override /dataset@trainer.datasetloaders.t
                                    "max_steps": 40000,
                                    "get_optimizer": {"lr": 2e-5},
                                    "log_every_n_steps": 100,
-                                   "val_every_n_steps": 2000},
+                                   "val_every_n_steps": 2000,
+                                   "val_plot_every_n_steps": 2000},
                        "run_type": "full_train"}
 cs.store(name="FullTrainRunConfig", node=FullTrainRunConfig, group="run_modifier", package="_global_")
 
@@ -155,13 +174,22 @@ def my_app(cfg: RunConfig) -> None:
 
     cfg.node_name = os.getenv("SLURMD_NODENAME", "NO_NODE_NAME_FOUND")
     cfg.output_dir = HydraConfig.get().runtime.output_dir
-    cfg.trainer.logger.name = f"{cfg.run_type}_maxCvgTemp={cfg.trainer.model.max_softmax_temperature}_cvgW={cfg.trainer.model.coverage_weight}_cvgType={cfg.trainer.model.coverage_encouragement_type}_lr={cfg.trainer.get_optimizer.lr}_cosSim={cfg.trainer.model.cosine_sim}_simTemp={cfg.trainer.model.sim_func_temp}_thresh={cfg.trainer.model.threshold}_divByLen={cfg.trainer.model.div_by_len}_entropyLoss={cfg.trainer.model.entropy_loss}"
+    ppconfig = cfg.trainer.datasetloaders.train_dataset.preprocessing
+    cfg.trainer.logger.name = f"{cfg.run_type}_pp_cds={(ppconfig.prob_combine, ppconfig.prob_delete, ppconfig.prob_swap)}_lr={cfg.trainer.get_optimizer.lr}"
+    if cfg.trainer.model.coverage_encouragement_type == "max_softmax":
+        cfg.trainer.logger.name = f"{cfg.run_type}_maxCvgTempStartEnd={(cfg.trainer.model.max_softmax_temperature_start, cfg.trainer.model.max_softmax_temperature_end)}_cvgW={cfg.trainer.model.coverage_weight}_cvgType={cfg.trainer.model.coverage_encouragement_type}_lr={cfg.trainer.get_optimizer.lr}"
+    # _cosSim={cfg.trainer.model.cosine_sim}_simTemp={cfg.trainer.model.sim_func_temp}_thresh={cfg.trainer.model.threshold}_divByLen={cfg.trainer.model.div_by_len}_entropyLoss={cfg.trainer.model.entropy_loss}
     # import ipdb; ipdb.set_trace()
 
     isMultirun = "num" in HydraConfig.get().job # type: ignore # for implicit debugging when launching a job without -m.
     # cfg.datasetloaders.num_workers =  3 if not isMultirun else HydraConfig.get().launcher.cpus_per_task - 3
     cfg_for_logging = OmegaConf.to_container(cfg)
-
+    seed = 2 # the preprocessing that occurs in the dataset objects for corruptions need the seeds set for consistency.
+    if seed > 0:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     trainer = instantiate(cfg.trainer)
     # using with wandb.init is a hack to get wandb to create a new run for every -m sweep. otherwise it concats them to one run.
     with trainer.logger.init(config=cfg_for_logging) as run:

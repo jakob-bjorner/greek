@@ -43,7 +43,8 @@ class Aligner:
     cosine_sim: bool = False
     sim_func_temp: float = 1.0 # 5 now 1/25=0.04, 10 now 1/100=0.01
     coverage_encouragement_type: str = "mse_softmax" # eventually with schedules, and other types "max_softmax"
-    max_softmax_temperature: float = 1.0
+    max_softmax_temperature_start: float = 1.0
+    max_softmax_temperature_end: float = 1.0
     coverage_weight: float = 0.0
 
     # train_co

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from pprint import pprint
 import wandb
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Any
 import contextlib
 
 
@@ -17,7 +17,9 @@ class BaseLogger(ABC):
     @abstractmethod
     def log(self, log_dict, **kwargs):
         raise NotImplementedError()
-    def watch(self, *args, **kwargs):
+    def watch(self, *args, **kwargs) -> Any:
+        pass
+    def Image(self, *args, **kwargs) -> Any:
         pass
 
 
@@ -32,6 +34,8 @@ class BasicPrintLogger(BaseLogger):
     def log(self, *args, **kwargs):
         print(f"log: {datetime.now()}", end=' ')
         pprint((args, kwargs))
+    def Image(self, *args, **kwargs):
+        return (args, kwargs)
 
 
 class WandBLogger(BaseLogger):
@@ -46,9 +50,11 @@ class WandBLogger(BaseLogger):
         assert isinstance(self.run, contextlib.AbstractContextManager)
         return self.run
     def log(self, *args, **kwargs):
-        self.wandb.log(*args, **kwargs)
+        return self.wandb.log(*args, **kwargs)
     def watch(self, *args, **kwargs):
-        self.wandb.watch(*args, **kwargs)
+        return self.wandb.watch(*args, **kwargs)
+    def Image(self, *args, **kwargs):
+        return self.wandb.Image(*args, **kwargs)
 
 
 

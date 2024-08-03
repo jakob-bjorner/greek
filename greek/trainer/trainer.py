@@ -1,4 +1,3 @@
-#%%
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
@@ -74,6 +73,7 @@ class AwesomeAlignTrainer:
                  max_epochs: float, 
                  log_every_n_steps: int, 
                  val_every_n_steps: int,
+                 val_plot_every_n_steps: int,
                  output_dir: str,
                  ):
         if (max_steps < 0 and max_epochs < 0) or (max_steps >= 0 and max_epochs >= 0):
@@ -81,7 +81,6 @@ class AwesomeAlignTrainer:
         self.model = model
         self.datasetloaders = datasetloaders
         self.logger = logger
-        self.seed = 2
         self.get_optimizer = get_optimizer
         self.get_scheduler = get_scheduler
         self.max_grad_norm = max_grad_norm
@@ -90,6 +89,7 @@ class AwesomeAlignTrainer:
         self.max_epochs = max_epochs
         self.log_every_n_steps = log_every_n_steps
         self.val_every_n_steps = val_every_n_steps
+        self.val_plot_every_n_steps = val_plot_every_n_steps
         self.output_dir = output_dir
 
     def initialize_train(self, config):
@@ -98,11 +98,6 @@ class AwesomeAlignTrainer:
         Who should be defining the collate function?
         '''
         self.config = config
-        if self.seed > 0:
-            random.seed(self.seed)
-            np.random.seed(self.seed)
-            torch.manual_seed(self.seed)
-            torch.cuda.manual_seed_all(self.seed)
         
         # taken from variable location depending on the model. might have to change this in future.
         self.datasetloaders.setup(block_size=512) 
@@ -124,6 +119,9 @@ class AwesomeAlignTrainer:
     def train_loop(self, progress_bar: tqdm.tqdm, formatted_string_postfix: str):
         self.model.train()
         for batch in self.datasetloaders.train_dataloader():
+            batch.step = self.current_global_step
+            batch.total_steps = self.max_steps
+
             # #debug shit:
             # if self.current_global_step < 39035:
             #     self.current_global_step += 1
@@ -159,13 +157,14 @@ class AwesomeAlignTrainer:
             
             self.current_global_step += 1
             if self.current_global_step % self.val_every_n_steps == 0:
-                self.validation_loop()
+                should_plot = (self.current_global_step >= self.max_steps) or (self.current_global_step % self.val_plot_every_n_steps == 0)
+                self.validation_loop(should_plot)
             if self.current_global_step >= self.max_steps:
                 break
 
     def fit(self, config):
         self.initialize_train(config)
-        self.validation_loop()
+        self.validation_loop(should_plot=True)
         formatted_string_postfix = "loss: {loss:3.5f}"
         progress_bar = tqdm.trange(self.max_steps, postfix=formatted_string_postfix.format_map({"loss": 0}))
         while self.current_epoch < self.max_epochs:
@@ -173,11 +172,11 @@ class AwesomeAlignTrainer:
             self.current_epoch += 1
         if self.current_global_step % self.val_every_n_steps != 0:
             # if we haven't already validated after the last step, then we will run validate loop.
-            self.validation_loop()
+            self.validation_loop(should_plot=True)
         self.test_loop()
         # self.save_checkpoint()
 
-    def validation_loop(self):
+    def validation_loop(self, should_plot):
         with torch.no_grad():
             was_training = self.model.training
             self.model.eval()
@@ -186,13 +185,15 @@ class AwesomeAlignTrainer:
                 progress_bar_val_iterator: Iterable[CollateFnReturn] = tqdm.tqdm(val_dataloader, desc=f"Val_{dataset_name}") 
                 metric = AwesomeAlignerValMetrics()
                 for batch in progress_bar_val_iterator:
+                    batch.step = self.current_global_step
+                    batch.total_steps = self.max_steps
+                    batch_size = batch.examples_src.size(0)
                     batch.to(self.device)
                     metric.update(self.model.validation_step(batch))
-
-                log_dict = metric.compute()
+                log_dict = metric.compute(dataset_name, self.logger, should_plot, self.current_global_step)
                 log_dict = {(f"eval_{dataset_name}_{key}"): val for key, val in log_dict.items()}
                 log_dict_total.update(log_dict)
-            print(log_dict_total, self.current_global_step)
+            print({k: v for k, v in log_dict_total.items() if "plotted" not in k}, self.current_global_step)
             self.logger.log(log_dict_total, step=self.current_global_step)
             self.model.train(was_training)
 

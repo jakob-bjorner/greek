@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import PreTrainedTokenizerBase
-from greek.dataset.dataset import AwesomeAlignDataset, AwesomeAlignDatasetsMap
+from greek.dataset.dataset import AwesomeAlignDatasetBase, AwesomeAlignDatasetsMap
 from greek.model.model import get_collate_fn
 
 # ''' constructs the eval, train, and test split of a particular dataset. Also gives the relevant tokenizer, and '''
@@ -27,7 +27,7 @@ class AwesomeAlignDatasetLoaders:
     '''
     def __init__(self, 
                  tokenizer: PreTrainedTokenizerBase, 
-                 train_dataset: AwesomeAlignDataset, 
+                 train_dataset: AwesomeAlignDatasetBase, 
                  val_datasets: AwesomeAlignDatasetsMap, 
                  test_datasets: AwesomeAlignDatasetsMap, 
                  batch_size: int, 

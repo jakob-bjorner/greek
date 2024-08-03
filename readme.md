@@ -35,3 +35,9 @@ pip install hydra-submitit-launcher --upgrade
 pip install ipython
 pip install wandb
 pip install transformers
+
+# coverage schedule
+python run.py -m +run_modifier=FullTrainRunConfig trainer.model.max_softmax_temperature_end=1e-16,1e-20 trainer.model.max_softmax_temperature_start=1 trainer.model.coverage_weight=0.06,0.03,0.01,0.005 trainer.model.coverage_encouragement_type=max_softmax
+
+# corruption sweep
+python run.py -m +run_modifier=FullTrainRunConfig trainer.datasetloaders.train_dataset.preprocessing.prob_combine=0.2,0.5,1.0 trainer.datasetloaders.train_dataset.preprocessing.prob_delete=0.0,0.2,0.5,1.0 trainer.datasetloaders.train_dataset.preprocessing.prob_swap=0.0,0.2,0.5,1.0

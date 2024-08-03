@@ -1,12 +1,14 @@
 #%%
-from typing import Optional, List, Tuple, Set
+from typing import Optional, List, Tuple, Set, Any
+from collections.abc import Callable
 from dataclasses import dataclass
+from abc import ABC
 
 import torch
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
-
-
+import numpy as np
+from tqdm import tqdm
 # questions about tokenizing and creating a dataset, and how in depth to make the collate function
 # - Should I just create the datasets, and not the dataloaders? what is the trainer in charge of?
 #   answer: For pranav, the trainer takes in the config and initializes everything. 
@@ -73,6 +75,8 @@ def get_word_2_word_gold_alignments(gold_label_str: str, gold_one_index: bool, i
 # help with type hints and changes later on, this was chosen over just a dict (or tuple).
 @dataclass
 class AwesomeAlignDatasetReturn: 
+    src: str
+    tgt: str
     src_ids: List[int]
     tgt_ids: List[int]
     bpe2word_map_src: List[int]
@@ -82,38 +86,75 @@ class AwesomeAlignDatasetReturn:
     possible_labels: Optional[List[Tuple[int, int]]] = None
     sure_labels: Optional[List[Tuple[int, int]]] = None
 
-class AwesomeAlignDataset(Dataset[AwesomeAlignDatasetReturn]):
-    def __init__(self, 
-                 tokenizer: PreTrainedTokenizerBase, 
-                 src_tgt_file: str, 
-                 gold_file: Optional[str], 
-                 gold_one_index: bool, 
-                 ignore_possible_alignments: bool):
-        self.tokenizer = tokenizer
-        self.src_tgt_lines = open(src_tgt_file, encoding="utf-8").readlines()
-
-        self.gold_lines = None
-        if gold_file:
-            self.gold_lines = open(gold_file, encoding="utf-8").readlines()
-            assert len(self.gold_lines) == len(self.src_tgt_lines), "must be the same length files if you are to use one as labels for the other."
-        # then filter based on src tgt sentence length
-        subset_indices = []
-        for i, src_tgt_line in enumerate(self.src_tgt_lines):
-            src, tgt = src_tgt_line.split(" ||| ")
-            src = src.strip()
-            tgt = tgt.strip()
-            if len(src) <= 0 or len(tgt) <= 0:
-                continue
-            subset_indices.append(i)
-        self.src_tgt_lines = [self.src_tgt_lines[i] for i in subset_indices]
-        if self.gold_lines:
-            self.gold_lines = [self.gold_lines[i] for i in subset_indices]
-
-        self.gold_one_index = gold_one_index
-        self.ignore_possible_alignments = ignore_possible_alignments
+def identity_preprocessing(src_tgts: List[Tuple[str,str]], gold_lines: Any) -> List[Tuple[str,str]]:
+    return src_tgts
+# from typing import List, Tuple, Any
+# import numpy as np
+# from pprint import pprint
+def preprocessing(src_tgt_pairs: List[Tuple[str,str]], gold_lines: Any, prob_combine: float, prob_delete: float, prob_swap: float) -> List[Tuple[str,str]]:
+    assert (gold_lines is None) or (prob_combine == prob_delete == prob_swap == 0), "Don't support permuting labels"
+    # Swap Combines Deletions
+    # prob_combine = 0.5
+    # prob_delete = 0.2
+    # prob_swap = 0.2
+    src_tgt_list_pairs = [([src], [tgt]) for src, tgt in src_tgt_pairs]
+    # first combine some up to 3 sentences?
+    new_src_tgts = [src_tgt_list_pairs[0]]
+    i = 0
+    while i < len(src_tgt_list_pairs)-1:
+        src_list, tgt_list = new_src_tgts[-1]
+        if prob_combine > np.random.rand() and len(src_list) < 3:
+            src_list = src_list + src_tgt_list_pairs[i + 1][0]
+            tgt_list = tgt_list + src_tgt_list_pairs[i + 1][1]
+            new_src_tgts[-1] = (src_list, tgt_list)
+        else:
+            new_src_tgts.append(src_tgt_list_pairs[i+1])
+        i += 1
+    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
+    # then delete some of them
+    src_tgt_list_pairs = new_src_tgts
+    new_src_tgts = []
+    i = 0
+    while i < len(src_tgt_list_pairs):
+        src_list, tgt_list = src_tgt_list_pairs[i]
+        if prob_delete > np.random.rand() and len(src_list) > 1:
+            index_to_del = np.random.randint(0,len(src_list))
+            if 0.5 > np.random.rand(): # delete in src
+                src_list.pop(index_to_del)
+            else: # del in tgt
+                tgt_list.pop(index_to_del)
+        new_src_tgts.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
+        i += 1
+    # print()
+    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
+    # print()
+    # then swap some
+    src_tgt_list_pairs = new_src_tgts
+    new_src_tgts = []
+    i = 0
+    while i < len(src_tgt_list_pairs):
+        src_list, tgt_list = src_tgt_list_pairs[i]
+        if prob_swap > np.random.rand():
+            if 0.5 > np.random.rand() and len(src_list) > 1: # swap in src
+                # I'll just permute as its only 3 items max.
+                src_list = [src_list[j] for j in np.random.permutation(len(src_list))]
+            elif len(tgt_list) > 1: # swap in tgt
+                tgt_list = [tgt_list[j] for j in np.random.permutation(len(tgt_list))]
+        new_src_tgts.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
+        i += 1
+    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
+    new_src_tgts = [(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts]
+    return new_src_tgts
+# preprocessing(list(zip([str(i) for i in range(40)],[str(i) for i in range(40)])), None);
+class AwesomeAlignDatasetBase(Dataset[AwesomeAlignDatasetReturn], ABC):
+    src_tgt_pairs: List[Tuple[str, str]]
+    tokenizer: PreTrainedTokenizerBase
+    gold_lines: Any
+    gold_one_index: bool
+    ignore_possible_alignments: bool
 
     def __len__(self):
-        return len(self.src_tgt_lines)
+        return len(self.src_tgt_pairs)
     
     def __getitem__(self, i):
         # return src ids, tgt ids, bpe2word map src, bpe2word map tgt, and labels (if available)
@@ -122,9 +163,7 @@ class AwesomeAlignDataset(Dataset[AwesomeAlignDatasetReturn]):
         while neg_i == i:
             neg_i = random.randint(0, self.__len__() - 1)
         # do the logic in here for getting all the info for i, and then just the src and tgt for neg_i.
-        src, tgt = self.src_tgt_lines[i].split(" ||| ")
-        src = src.strip()
-        tgt = tgt.strip()
+        src, tgt = self.src_tgt_pairs[i]
 
         src_token_id_by_words = [self.tokenizer.encode(word, add_special_tokens=False) for word in src.split()]
         tgt_token_id_by_words = [self.tokenizer.encode(word, add_special_tokens=False) for word in tgt.split()]
@@ -137,12 +176,12 @@ class AwesomeAlignDataset(Dataset[AwesomeAlignDatasetReturn]):
         src_ids = self.tokenizer.encode(src)
         tgt_ids = self.tokenizer.encode(tgt)
 
-        neg_src, neg_tgt = self.src_tgt_lines[neg_i].split(" ||| ")
-        neg_src = neg_src.strip()
-        neg_tgt = neg_tgt.strip()
+        neg_src, neg_tgt = self.src_tgt_pairs[neg_i]
         negative_sentence_src_ids = self.tokenizer.encode(neg_src)
         negative_sentence_tgt_ids = self.tokenizer.encode(neg_tgt)
         example = AwesomeAlignDatasetReturn(
+            src=src,
+            tgt=tgt,
             src_ids=src_ids,
             tgt_ids=tgt_ids,
             bpe2word_map_src=bpe2word_map_src,
@@ -155,6 +194,72 @@ class AwesomeAlignDataset(Dataset[AwesomeAlignDatasetReturn]):
             example.sure_labels = sure_labels
             example.possible_labels = possible_labels
         return example
+    
+class AwesomeAlignDatasetMultilingualTraining(AwesomeAlignDatasetBase):
+    def __init__(self, 
+                 tokenizer: PreTrainedTokenizerBase,
+                 src_tgt_enfr_file: str,
+                 src_tgt_roen_file: str,
+                 src_tgt_deen_file: str,
+                 src_tgt_jaen_file: str,
+                 preprocessing: Callable[[List[Tuple[str,str]],Any], List[Tuple[str,str]]],
+                 len_per_lang: int):
+        self.tokenizer = tokenizer
+        self.gold_lines = None
+        self.gold_one_index = False
+        self.ignore_possible_alignments = False
+        # opens all the files independantly and preprocesses them, and then combines them into one long thing.
+        self.src_tgt_pairs = []
+        for file_name in tqdm([src_tgt_enfr_file, src_tgt_roen_file, src_tgt_deen_file, src_tgt_jaen_file], desc="MultiLingual Dataprep"):
+            src_tgt_pairs_one_lang = []
+            with open(file_name, "r", encoding="utf-8") as fin:
+                src_tgt_lines = fin.readlines()
+                i = 0
+                for src_tgt_line in src_tgt_lines:
+                    src, tgt = src_tgt_line.split(" ||| ")
+                    src = src.strip()
+                    tgt = tgt.strip()
+                    if len(src) <= 0 or len(tgt) <= 0:
+                        continue
+                    i += 1
+                    src_tgt_pairs_one_lang.append((src, tgt))
+                    if i >= len_per_lang:
+                        break
+            self.src_tgt_pairs += preprocessing(src_tgt_pairs_one_lang, None)
+
+class AwesomeAlignDataset(AwesomeAlignDatasetBase):
+    def __init__(self, 
+                 tokenizer: PreTrainedTokenizerBase, 
+                 src_tgt_file: str, 
+                 gold_file: Optional[str], 
+                 gold_one_index: bool, 
+                 ignore_possible_alignments: bool,
+                 preprocessing: Callable[[List[Tuple[str,str]],Any], List[Tuple[str,str]]]):
+        self.tokenizer = tokenizer
+        src_tgt_lines = open(src_tgt_file, encoding="utf-8").readlines()
+
+        self.gold_lines = None
+        if gold_file:
+            self.gold_lines = open(gold_file, encoding="utf-8").readlines()
+            assert len(self.gold_lines) == len(src_tgt_lines), "must be the same length files if you are to use one as labels for the other."
+        # then filter based on src tgt sentence length
+        self.src_tgt_pairs = []
+        subset_indices = []
+        for i, src_tgt_line in enumerate(src_tgt_lines):
+            src, tgt = src_tgt_line.split(" ||| ")
+            src = src.strip()
+            tgt = tgt.strip()
+            if len(src) <= 0 or len(tgt) <= 0:
+                continue
+            self.src_tgt_pairs.append((src, tgt))
+            subset_indices.append(i)
+
+        if self.gold_lines:
+            self.gold_lines = [self.gold_lines[i] for i in subset_indices]
+        self.src_tgt_pairs = preprocessing(self.src_tgt_pairs, self.gold_lines)
+        self.gold_one_index = gold_one_index
+        self.ignore_possible_alignments = ignore_possible_alignments
+
 
 class AwesomeAlignDatasetsMap:
     def __init__(self, enfr_dataset, deen_dataset, roen_dataset, jaen_dataset):
@@ -292,6 +397,7 @@ class OLDLineByLineTextDataset(Dataset):
 
 
 if __name__ == "__main__":
+
     pass
     # cursory testing to ensure correctness and no significant speed decrease in dataset switch from Awesome align to my own.
     # main reason for switch is awesome align preprocesses all their data at once, and I didn't want to do that. 

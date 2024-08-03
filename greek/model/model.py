@@ -5,18 +5,21 @@ import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from typing import List, Dict, Any, Tuple, Set, Optional
 from dataclasses import dataclass, field
+import numpy as np
 import random
 from torch.nn.utils.rnn import pad_sequence
 from greek.dataset.dataset import AwesomeAlignDatasetReturn
-from collections import UserDict
 # collate function is deeply related to how the train function works, so I will define them in the same place.
 from transformers.models.bert.modeling_bert import BertForMaskedLM
 from transformers import PreTrainedTokenizerBase
-
-
+import matplotlib.pyplot as plt
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Rectangle
 
 @dataclass
 class CollateFnReturn:
+    srcs: List[str]
+    tgts: List[str]
     examples_src: torch.Tensor
     examples_tgt: torch.Tensor
     alignment_construction_params: Dict[str, Any]
@@ -26,6 +29,9 @@ class CollateFnReturn:
     langid_tgtsrc: torch.Tensor
     psi_examples_srctgt: torch.Tensor
     psi_labels: torch.Tensor
+    step: int
+    total_steps: int
+    
     def to(self, device):
         def tree_map(dict_obj):
             for key, val in dict_obj.items():
@@ -65,7 +71,11 @@ class AwesomeAlignerValMetrics:
         # average by default, and then for specific keys, do specific things.
 
         num_elements = 0
+        
         for key, value in other.items():
+            if key in ["word_alignments", "impacts", "srcs", "tgts", "gold_possible_word_alignments", "gold_sure_word_alignments"]:
+                self.data[key] = self.data.get(key, []) + value
+                continue
             if isinstance(value, torch.Tensor):
                 value = value.detach().cpu() # .mean().item()
                 if num_elements == 0:
@@ -77,22 +87,112 @@ class AwesomeAlignerValMetrics:
             self.data[key] = self.data.get(key, 0) + value # the default is in the case that this is the first update call.
         self.total_num_elements += num_elements
 
-    def compute(self):
+    def compute(self, dataset_name: str, logger, should_plot, current_global_step):
         """computes the aggigate metrics for this class to be returned for logging/printing."""
         aggregate_metrics = dict()
 
         for key in self.data.keys():
             if "loss_per_batch" in key:
                 aggregate_metrics["avg_" + key.removesuffix("_per_batch")] = self.data[key] / self.total_num_elements
-            elif key not in ["guesses_made_in_possible", "guesses_made", "num_sure", "guesses_made_in_sure"]:
+            elif key not in ["guesses_made_in_possible", "guesses_made", "num_sure", "guesses_made_in_sure", "word_alignments", "impacts", "srcs", "tgts", "gold_possible_word_alignments", "gold_sure_word_alignments"]:
                 aggregate_metrics["avg_" + key] = self.data[key] / self.total_num_elements
-        aggregate_metrics["total_num_elements"] = self.total_num_elements
+        # aggregate_metrics["total_num_elements"] = self.total_num_elements
 
-        aggregate_metrics["Precision"] = self.data["guesses_made_in_possible"] / self.data["guesses_made"]
-        aggregate_metrics["Recall"] = self.data["guesses_made_in_sure"] / self.data["num_sure"]
-        aggregate_metrics["AER"] = 1 - ((self.data["guesses_made_in_possible"] + self.data["guesses_made_in_sure"]) / (self.data["guesses_made"] + self.data["num_sure"]))
+        aggregate_metrics["Precision"] = 0 if self.data["guesses_made"] == 0 else self.data["guesses_made_in_possible"] / self.data["guesses_made"]
+        aggregate_metrics["Recall"] = 0 if self.data["num_sure"] == 0 else self.data["guesses_made_in_sure"] / self.data["num_sure"]
+        aggregate_metrics["AER"] = 0 if (self.data["guesses_made"] + self.data["num_sure"]) == 0 else 1 - ((self.data["guesses_made_in_possible"] + self.data["guesses_made_in_sure"]) / (self.data["guesses_made"] + self.data["num_sure"]))
+        
+        # create the images for uploading
+        # need src, tgt, sure_gold, possible_gold, hypothesis, 
+        if should_plot: # test plotting with: python run.py +run_modifier=SupervisedRunConfig run_type=supervised_show_all_plots datasetmap@trainer.datasetloaders.val_datasets=nozhSupervisedAwesomeAlignDatasetsMapEval
+            def display_alignment(index, sure, possible, word_alignment, source, target, language, p_r_aer=None, bigger_boxes=False, matrix_to_compute_p_r_aer=None):
+                m = len(source)
+                l = len(target)
+                hypothesis_mat = np.zeros((m, l))
+                hypothesis_mat[tuple(zip(*word_alignment))] = 1
+                # plt.style.use('_mpl-gallery-nogrid')
+                multiplier = 1 if bigger_boxes else 0.5 
+                multiplier = 0.2 # smaller boxes for wandb
+                fig, ax = plt.subplots(figsize = (1 + len(source) * multiplier, 1 + len(target) * multiplier))
+                # precision recall for this image:
+                
+                num_sure = len(sure)
+                guesses_made = len(word_alignment)
+                guesses_made_in_sure = len(set(word_alignment).intersection(sure))
+                guesses_made_in_possible = len(set(word_alignment).intersection(possible))
+                precision = guesses_made_in_possible / guesses_made
+                recall = guesses_made_in_sure / num_sure
+                aer = 1 - ((guesses_made_in_possible + guesses_made_in_sure) / (guesses_made + num_sure))
+                
+                num_words_total = m + l
+                num_words_covered = len(set(s for s,t in word_alignment)) + len(set(t for s,t in word_alignment))
+                coverage = num_words_covered / num_words_total
 
+                ax.set_title(f"{index:3} p_r_aer_cvg=[{precision:.5f}, {recall:.5f}, {aer:.5f}, {coverage:.5f}]")
+                im = ax.imshow(hypothesis_mat, cmap='Blues', vmin=0, vmax=1)
+                ax.set_xticks(np.arange(len(target)), labels=target)
+                
+                if 'jaen' not in (language or " "):
+                    ax.set_yticks(np.arange(len(source)), labels=source)
 
+                # Rotate the tick labels and set their alignment.
+                plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
+                        rotation_mode="anchor")
+
+                # Loop over data dimensions and create text annotations.
+                # for i in range(m): # this will be useful when I want to plot percentages maybe when doing something more than word alignment.
+                #     for j in range(l):
+                #         text = ax.text(j, i, hypothesis_mat[i, j],
+                #                     ha="center", va="center", color="orange")
+                patches_sure = []
+                patches_possible = []
+                for box in sure:
+                    patches_sure.append(Rectangle((box[1]-0.3,box[0]-0.3), 0.6, 0.6, angle=45, rotation_point="center"))
+                for box in set(possible).difference(set(sure)):
+                    patches_possible.append(Rectangle((box[1]-0.4,box[0]-0.4), 0.8, 0.8))
+                ax.add_collection(PatchCollection(patches_sure, edgecolor="LightGreen", facecolor="none",lw=2))
+                ax.add_collection(PatchCollection(patches_possible, edgecolor="Orange", facecolor="none", lw=2))
+                # ax.legend(["Orange is possible", "Green is sure"]) # this doesn't seem to work, but only necessary for paper, and can be added in post.
+                fig.tight_layout()
+                # print(df.sort_values(out_format + 'impact_on_aer').index.tolist()[::-1])
+                return fig 
+            
+            consistent_index = 29 # could be specified in dataset's config, and retrieved from the dataloader in the trainer. For now just here.
+            fig = display_alignment(consistent_index,
+                                    self.data["gold_sure_word_alignments"][consistent_index], 
+                                    self.data["gold_possible_word_alignments"][consistent_index], 
+                                    self.data["word_alignments"][consistent_index], 
+                                    self.data["srcs"][consistent_index].split(), 
+                                    self.data["tgts"][consistent_index].split(), 
+                                    dataset_name)
+            # fig.savefig("temp.png")
+            aggregate_metrics[f"plotted_consistent"] = logger.Image(fig, caption=f"step: {current_global_step}")
+            plt.close()
+
+            indices_of_importance = np.argsort(self.data["impacts"]).tolist()
+            if dataset_name == "roen":
+                indices_of_importance.remove(23)
+            high_imact_index = indices_of_importance[-1]
+            fig = display_alignment(high_imact_index,
+                                    self.data["gold_sure_word_alignments"][high_imact_index], 
+                                    self.data["gold_possible_word_alignments"][high_imact_index], 
+                                    self.data["word_alignments"][high_imact_index], 
+                                    self.data["srcs"][high_imact_index].split(), 
+                                    self.data["tgts"][high_imact_index].split(), 
+                                    dataset_name)
+            aggregate_metrics[f"plotted_worst"] = logger.Image(fig, caption=f"step: {current_global_step}")
+            plt.close()
+
+            second_high_imact_index = indices_of_importance[-2]
+            fig = display_alignment(second_high_imact_index,
+                                    self.data["gold_sure_word_alignments"][second_high_imact_index],
+                                    self.data["gold_possible_word_alignments"][second_high_imact_index],
+                                    self.data["word_alignments"][second_high_imact_index],
+                                    self.data["srcs"][second_high_imact_index].split(),
+                                    self.data["tgts"][second_high_imact_index].split(), 
+                                    dataset_name)
+            aggregate_metrics[f"plotted_2nd_worst"] = logger.Image(fig, caption=f"step: {current_global_step}")
+            plt.close()
         return aggregate_metrics
     
 class BertPSIHead(nn.Module):
@@ -137,7 +237,8 @@ class AwesomeAligner(BaseTextAligner):
                  cosine_sim: bool,
                  sim_func_temp: float,
                  coverage_encouragement_type: str,
-                 max_softmax_temperature: float,
+                 max_softmax_temperature_start: float,
+                 max_softmax_temperature_end: float,
                  coverage_weight: float
                  ):
         super().__init__()
@@ -160,7 +261,8 @@ class AwesomeAligner(BaseTextAligner):
         self.cosine_sim = cosine_sim
         self.sim_func_temp = sim_func_temp
         self.coverage_encouragement_type = coverage_encouragement_type
-        self.max_softmax_temperature = max_softmax_temperature
+        self.max_softmax_temperature_start = max_softmax_temperature_start
+        self.max_softmax_temperature_end = max_softmax_temperature_end
         self.coverage_weight = coverage_weight
 
         # the per encoder way to get layer hidden rep will be different. 
@@ -178,25 +280,20 @@ class AwesomeAligner(BaseTextAligner):
         if self.train_supervised:
             supervised_loss_and_label_guesses_dict = self.get_supervised_training_loss(batch)
             if not is_val:
-                supervised_loss_and_label_guesses_dict['loss_per_batch'].mean().backward()
-            losses["supervised_loss_per_batch"] = supervised_loss_and_label_guesses_dict['loss_per_batch'].detach()
+                (supervised_loss_and_label_guesses_dict['supervised_loss_per_batch'] + supervised_loss_and_label_guesses_dict['supervised_coverage_loss_per_batch']).mean().backward()
+            losses["supervised_loss_per_batch"] = supervised_loss_and_label_guesses_dict['supervised_loss_per_batch'].detach()
+            losses["supervised_coverage_loss_per_batch"] = supervised_loss_and_label_guesses_dict['supervised_coverage_loss_per_batch'].detach()
             # then we calculate prec_recall_aer_coverage (could make this optional if costs a bunch, but should be a good signal)
             token_alignment = supervised_loss_and_label_guesses_dict["token_alignment"]
-
-            prec_recall_aer_coverage_partial_metrics = self.get_word_prec_recall_aer_coverage_partial_metrics(
-                                                            token_alignment,
-                                                            batch.alignment_construction_params["bpe2word_map_src"],
-                                                            batch.alignment_construction_params["bpe2word_map_tgt"],
-                                                            batch.alignment_construction_params["gold_possible_word_alignments"],
-                                                            batch.alignment_construction_params["gold_sure_word_alignments"],
-                                                            )
-            losses.update(prec_recall_aer_coverage_partial_metrics)
+            # I don't go about computing the aer prec recall for the training set during training. Could include the trianing set as one of my eval sets if I wanted this metric?        
         
         if self.train_so:
             so_loss_and_label_guesses_dict = self.get_so_loss(batch)
             if not is_val:
-                so_loss_and_label_guesses_dict['loss_per_batch'].mean().backward()
-            losses["so_loss_per_batch"] = so_loss_and_label_guesses_dict['loss_per_batch'].detach()
+                (so_loss_and_label_guesses_dict['supervised_loss_per_batch'] + so_loss_and_label_guesses_dict['supervised_coverage_loss_per_batch']).mean().backward()
+            losses["so_loss_per_batch"] = so_loss_and_label_guesses_dict['supervised_loss_per_batch'].detach()
+            losses["so_coverage_loss_per_batch"] = so_loss_and_label_guesses_dict['supervised_coverage_loss_per_batch'].detach()
+            
             token_alignment = so_loss_and_label_guesses_dict["token_alignment"]
         
         if self.train_tlm:
@@ -226,9 +323,12 @@ class AwesomeAligner(BaseTextAligner):
                                                             batch.alignment_construction_params["bpe2word_map_src"],
                                                             batch.alignment_construction_params["bpe2word_map_tgt"],
                                                             batch.alignment_construction_params["gold_possible_word_alignments"],
-                                                            batch.alignment_construction_params["gold_sure_word_alignments"],
-                                                            )
+                                                            batch.alignment_construction_params["gold_sure_word_alignments"])
             losses.update(prec_recall_aer_coverage_partial_metrics)
+            losses.update({"srcs": batch.srcs, 
+                           "tgts": batch.tgts, 
+                           "gold_possible_word_alignments":batch.alignment_construction_params["gold_possible_word_alignments"], 
+                           "gold_sure_word_alignments": batch.alignment_construction_params["gold_sure_word_alignments"]})
         batch_size = batch.examples_srctgt.size(0)
         losses["loss_per_batch"] = sum((v if "loss_per_batch" in k else 0 for k, v in losses.items()), start=torch.zeros(batch_size, dtype=torch.float32, device=self.device))
         return losses
@@ -250,8 +350,9 @@ class AwesomeAligner(BaseTextAligner):
                                                                                                                         bpe2word_map_tgt=bpe2word_map_tgt)
             self.train(was_training)
         _, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt = self.get_token_alignments_and_src_tgt_lens(batch)
-        loss_per_batch = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_self_guide, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt)
-        return {"loss_per_batch": loss_per_batch, "token_alignment": token_alignment}
+        loss_per_batch = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_self_guide, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt, batch.step, batch.total_steps)
+        loss_per_batch.update({"token_alignment": token_alignment})
+        return loss_per_batch
 
     def get_token_alignments_and_src_tgt_lens(self, batch: CollateFnReturn):
         PAD_ID = 0
@@ -287,13 +388,12 @@ class AwesomeAligner(BaseTextAligner):
         token_alignment, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt = self.get_token_alignments_and_src_tgt_lens(batch)
         token_level_alignment_mat_labels = self.construct_token_level_alignment_mat_from_word_level_alignment_list(**batch.alignment_construction_params)
         # turns out flatten.sum isn't significantly slower on mps or cpu than .sum((1,2))
-        per_batch_loss = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_labels, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt)
-        return {"loss_per_batch": per_batch_loss, "token_alignment": token_alignment}
+        per_batch_loss = self.get_per_batch_loss_on_token_alignments(token_level_alignment_mat_labels, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt, batch.step, batch.total_steps)
+        per_batch_loss.update({"token_alignment": token_alignment})
+        return per_batch_loss
 
-    def get_per_batch_loss_on_token_alignments(self, token_level_alignment_mat_labels, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt):
-        
-        # TODO: fix softmax with masking for max_softmax
-        #       I screwed up the fact that masking heavily effects the conceptual interpretation of coverage's implementation
+    def get_per_batch_loss_on_token_alignments(self, token_level_alignment_mat_labels, src_tgt_masked_alignment_scores, tgt_src_masked_alignment_scores, src_tgt_mask, tgt_src_mask, len_src, len_tgt, step, total_steps):
+        ret_dict = dict()
         coverage_loss = 0
         src_tgt_softmax = torch.softmax(src_tgt_masked_alignment_scores, dim=-1)
         tgt_src_softmax = torch.softmax(tgt_src_masked_alignment_scores, dim=-2)
@@ -301,8 +401,11 @@ class AwesomeAligner(BaseTextAligner):
             coverage_loss = ((src_tgt_softmax.sum(dim=-2) - 1) ** 2).flatten(1).mean(1)
             coverage_loss += ((tgt_src_softmax.sum(dim=-1) - 1) ** 2).flatten(1).mean(1)
         elif self.coverage_encouragement_type == "max_softmax":
-            coverage_loss = - torch.sum(src_tgt_softmax * torch.softmax((src_tgt_softmax + tgt_src_mask)/self.max_softmax_temperature, dim=-2), dim=-2).flatten(1).mean(1)
-            coverage_loss -= torch.sum(tgt_src_softmax * torch.softmax((tgt_src_softmax + src_tgt_mask)/self.max_softmax_temperature, dim=-1), dim=-1).flatten(1).mean(1)
+            faction_to_end = step / total_steps # expecting to get passed non zero total steps
+            temp = self.max_softmax_temperature_end * faction_to_end + self.max_softmax_temperature_start * (1-faction_to_end)
+            ret_dict.update({"temperature": temp})
+            coverage_loss = - torch.sum(src_tgt_softmax * torch.softmax((src_tgt_softmax + tgt_src_mask)/temp, dim=-2), dim=-2).flatten(1).mean(1)
+            coverage_loss -= torch.sum(tgt_src_softmax * torch.softmax((tgt_src_softmax + src_tgt_mask)/temp, dim=-1), dim=-1).flatten(1).mean(1)
         else:
             raise ValueError("must be either mse_softmax or max_softmax")
         coverage_loss_per_batch = coverage_loss * self.coverage_weight
@@ -326,7 +429,8 @@ class AwesomeAligner(BaseTextAligner):
         else:
             per_batch_loss = -so_loss_src - so_loss_tgt
 
-        return per_batch_loss + coverage_loss_per_batch
+        ret_dict.update({"supervised_loss_per_batch": per_batch_loss, "supervised_coverage_loss_per_batch": coverage_loss_per_batch})
+        return ret_dict
 
     def construct_token_level_alignment_mat_from_word_level_alignment_list(self, gold_possible_word_alignments, src_len, tgt_len, bpe2word_map_src, bpe2word_map_tgt, **kwargs):
         # TODO: remove kwargs and clean up the difference between true labels and the self training labels.
@@ -417,6 +521,7 @@ class AwesomeAligner(BaseTextAligner):
 
     def mask_tokens(self, inputs: torch.Tensor, langid_mask=None, lang_id=None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
+        Taken from Awesome-align directly, with minimal modification.
         Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
         """
         MASK_ID = 103
@@ -485,7 +590,9 @@ class AwesomeAligner(BaseTextAligner):
 
         num_words_total = 0
         num_words_covered = 0
-        coverage = []
+        coverages = []
+        impacts = []
+
         for i in range(batch_size):
             word_level_alignment = word_level_alignments[i]
             gold_possible_word_alignment = gold_possible_word_alignments[i]
@@ -497,14 +604,17 @@ class AwesomeAligner(BaseTextAligner):
             guesses_made_in_possible += len(set(word_level_alignment).intersection(gold_possible_word_alignment))
             num_words_total = (1 + bpe2word_map_src[i][-1]) + (1 + bpe2word_map_tgt[i][-1]) # this doesn't account for the fact we only take the first 510 tokens to align.
             num_words_covered = len(set(s for s,t in word_level_alignment)) + len(set(t for s,t in word_level_alignment))
-            coverage.append(num_words_covered/num_words_total)
+            coverages.append(num_words_covered/num_words_total)
+            impacts.append((len(gold_sure_word_alignment) + len(word_level_alignment)) - (len(set(word_level_alignment).intersection(gold_sure_word_alignment)) + len(set(word_level_alignment).intersection(gold_possible_word_alignment))))
 
         prec_recall_aer_coverage_partial_metrics = {
             "num_sure": num_sure,
             "guesses_made": guesses_made,
             "guesses_made_in_sure": guesses_made_in_sure,
             "guesses_made_in_possible": guesses_made_in_possible,
-            "coverage": torch.tensor(coverage),
+            "coverage": torch.tensor(coverages),
+            "impacts": impacts,
+            "word_alignments": word_level_alignments,
         }
         return prec_recall_aer_coverage_partial_metrics
 
@@ -545,7 +655,11 @@ def get_collate_fn(pad_token_id, block_size):
         bpe2word_map_src, bpe2word_map_tgt = [], []
         gold_possible_word_alignments = []
         gold_sure_word_alignments = []
+        srcs = []
+        tgts = []
         for example in examples:
+            srcs.append(example.src)
+            tgts.append(example.tgt)
             end_id = [example.src_ids[-1]]
 
             src_id = example.src_ids[:block_size]
@@ -624,7 +738,9 @@ def get_collate_fn(pad_token_id, block_size):
         # TODO: there could be a difference between using this and supervised finetuning, might want to get the loss from SO as a possible metric in eval seperate from AER
         #   then could add new loss called supervised loss which requires the label to be given, and allows for recording of this loss
         # return [examples_src, examples_tgt, alignment_construction_params, examples_srctgt, langid_srctgt, examples_tgtsrc, langid_tgtsrc, psi_examples_srctgt, psi_labels]
-        batched_examples = CollateFnReturn(
+        return CollateFnReturn(
+            srcs = srcs,
+            tgts = tgts,
             examples_src = examples_src, 
             examples_tgt = examples_tgt,
             alignment_construction_params = alignment_construction_params,
@@ -633,9 +749,10 @@ def get_collate_fn(pad_token_id, block_size):
             examples_tgtsrc = examples_tgtsrc, 
             langid_tgtsrc = langid_tgtsrc, 
             psi_examples_srctgt = psi_examples_srctgt, 
-            psi_labels = psi_labels, 
+            psi_labels = psi_labels,
+            step=0, 
+            total_steps=0
         )
-        return batched_examples
     return collate_fn
 
 if __name__ == "__main__":
