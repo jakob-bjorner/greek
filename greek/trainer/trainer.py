@@ -91,6 +91,7 @@ class AwesomeAlignTrainer:
         self.val_every_n_steps = val_every_n_steps
         self.val_plot_every_n_steps = val_plot_every_n_steps
         self.output_dir = output_dir
+        self.last_eval_log_dict = None
 
     def initialize_train(self, config):
         ''' What is the initialize training model in charge of?
@@ -100,7 +101,7 @@ class AwesomeAlignTrainer:
         self.config = config
         
         # taken from variable location depending on the model. might have to change this in future.
-        self.datasetloaders.setup(block_size=512) 
+        self.datasetloaders.setup(mlm_probability=self.model.mlm_probability, word_masking=self.model.word_masking, block_size=512) 
         
         if self.max_steps < 0:
             self.max_steps = int(self.max_epochs * np.ceil(len(self.datasetloaders.train_dataset) / self.datasetloaders.batch_size))
@@ -174,16 +175,18 @@ class AwesomeAlignTrainer:
             # if we haven't already validated after the last step, then we will run validate loop.
             self.validation_loop(should_plot=True)
         self.test_loop()
-        # self.save_checkpoint()
+        self.save_checkpoint("post_train.pt")
+        return self.last_eval_log_dict
 
     def validation_loop(self, should_plot):
         with torch.no_grad():
             was_training = self.model.training
             self.model.eval()
             log_dict_total = {}
-            for dataset_name, val_dataloader in self.datasetloaders.val_dataloaders_iterator():
+            for dataset_name, val_dataloader, preprocessing_stats in self.datasetloaders.val_dataloaders_iterator():
                 progress_bar_val_iterator: Iterable[CollateFnReturn] = tqdm.tqdm(val_dataloader, desc=f"Val_{dataset_name}") 
                 metric = AwesomeAlignerValMetrics()
+                metric.add_preprocessing_stats(*preprocessing_stats)
                 for batch in progress_bar_val_iterator:
                     batch.step = self.current_global_step
                     batch.total_steps = self.max_steps
@@ -194,6 +197,7 @@ class AwesomeAlignTrainer:
                 log_dict = {(f"eval_{dataset_name}_{key}"): val for key, val in log_dict.items()}
                 log_dict_total.update(log_dict)
             print({k: v for k, v in log_dict_total.items() if "plotted" not in k}, self.current_global_step)
+            self.last_eval_log_dict = log_dict_total
             self.logger.log(log_dict_total, step=self.current_global_step)
             self.model.train(was_training)
 
@@ -208,18 +212,21 @@ class AwesomeAlignTrainer:
         # should I be saving just the model, or also the config which was used to create it? This is automatically saved with the model due to hydra.
         pass
     def save_checkpoint(self, name):
+        os.makedirs(os.path.join(self.output_dir, "checkpoints"), exist_ok=True)
         torch.save(
             {
-                "optimizer": self.optimizer,
-                "scheduler": self.scheduler,
+                # "optimizer": self.optimizer,
+                # "scheduler": self.scheduler,
                 "model": self.model,
                 "current_epoch": self.current_epoch,
                 "current_global_step": self.current_global_step,
-                "config": self.config, # must load in the datasetloaders, and other stuff probably
+                # Must load in the datasetloaders, and other stuff probably
+                # "config": self.config, # this doesn't work with SCHEDULER yet get can't pickle local object error. 
             },
             os.path.join(self.output_dir, "checkpoints", name)
         ) 
         # TODO: look into saving and loading partial checkpoints: https://github.com/pranav-putta/lm-nav/blob/main/lmnav/ppo_train.py#L560
         # I particularly have to be careful about loading the config into the trainer, and get the right state loaded into the optimizer, and pick up on the same wandb log.
+        #    Right now, I just want functionality to be able to save a checkpoint for the BERT model to be able to test it later under potentially different settings.
 
-# %%
+

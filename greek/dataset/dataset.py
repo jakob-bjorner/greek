@@ -1,5 +1,5 @@
 #%%
-from typing import Optional, List, Tuple, Set, Any
+from typing import Optional, List, Tuple, Set, Any, Union
 from collections.abc import Callable
 from dataclasses import dataclass
 from abc import ABC
@@ -40,8 +40,6 @@ from tqdm import tqdm
 #   to combat this issue, the recommendation is to convert the data that you index into with numpy array, and if they are more complex than text good luck! Here we want to use maps from token positions to indices
 #   answer: I won't deal with this issue as I have plenty of memory ~1 TB of ram, where the dataset only takes about 1 GB, but the probable best solution is https://github.com/pytorch/pytorch/issues/13246#issuecomment-612396143
 
-
-
 def get_word_2_word_gold_alignments(gold_label_str: str, gold_one_index: bool, ignore_possible_alignments: bool):
     # return the sure and possible alignments in a dict, and their structure should be that of a matrix, or it could be just as tuples? 
     # I like the idea of matrix. and for now, just use ignore possible as indicator if you should put the ones in the matrix or not.
@@ -80,79 +78,138 @@ class AwesomeAlignDatasetReturn:
     src_ids: List[int]
     tgt_ids: List[int]
     bpe2word_map_src: List[int]
-    bpe2word_map_tgt: List[Tuple[int, int]]
+    bpe2word_map_tgt: List[int]
     negative_sentence_src_ids: List[int]
     negative_sentence_tgt_ids: List[int]
     possible_labels: Optional[List[Tuple[int, int]]] = None
     sure_labels: Optional[List[Tuple[int, int]]] = None
 
-def identity_preprocessing(src_tgts: List[Tuple[str,str]], gold_lines: Any) -> List[Tuple[str,str]]:
-    return src_tgts
-# from typing import List, Tuple, Any
-# import numpy as np
-# from pprint import pprint
-def preprocessing(src_tgt_pairs: List[Tuple[str,str]], gold_lines: Any, prob_combine: float, prob_delete: float, prob_swap: float) -> List[Tuple[str,str]]:
-    assert (gold_lines is None) or (prob_combine == prob_delete == prob_swap == 0), "Don't support permuting labels"
+from pprint import pprint
+def preprocessing(src_tgt_pairs: List[Tuple[str,str]], gold_lines: Any, gold_one_index: bool, ignore_possible_alignments: bool, prob_combine: float, prob_delete: float, prob_move:float ,prob_swap: float) -> Union[Tuple[List[Tuple[str,str]], Any], Tuple[List[Tuple[str,str]], Any, Any, Any]]:
+    # assert (gold_lines is None) or (prob_combine == prob_delete == prob_swap == 0), "Don't support permuting labels"
+    indices_to_combine = list(zip([[i] for i in range(len(src_tgt_pairs))],[[i] for i in range(len(src_tgt_pairs))]))
+    if prob_combine == 0.0:
+        return src_tgt_pairs, gold_lines
+
     # Swap Combines Deletions
+
     # prob_combine = 0.5
     # prob_delete = 0.2
     # prob_swap = 0.2
-    src_tgt_list_pairs = [([src], [tgt]) for src, tgt in src_tgt_pairs]
+    # src_tgt_list_pairs = [([src], [tgt]) for src, tgt in src_tgt_pairs]
     # first combine some up to 3 sentences?
-    new_src_tgts = [src_tgt_list_pairs[0]]
+    indices_to_delete = [indices_to_combine[0]]
     i = 0
-    while i < len(src_tgt_list_pairs)-1:
-        src_list, tgt_list = new_src_tgts[-1]
+    while i < len(indices_to_combine)-1:
+        src_list, tgt_list = indices_to_delete[-1]
         if prob_combine > np.random.rand() and len(src_list) < 3:
-            src_list = src_list + src_tgt_list_pairs[i + 1][0]
-            tgt_list = tgt_list + src_tgt_list_pairs[i + 1][1]
-            new_src_tgts[-1] = (src_list, tgt_list)
+            src_list = src_list + indices_to_combine[i + 1][0]
+            tgt_list = tgt_list + indices_to_combine[i + 1][1]
+            indices_to_delete[-1] = (src_list, tgt_list)
         else:
-            new_src_tgts.append(src_tgt_list_pairs[i+1])
+            indices_to_delete.append(indices_to_combine[i+1])
         i += 1
-    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
+    # pprint([(" ".join([str(s) for s in src]), " ".join([str(t) for t in tgt])) for src, tgt in indices_to_delete])
     # then delete some of them
-    src_tgt_list_pairs = new_src_tgts
-    new_src_tgts = []
+    indices_to_move = []
     i = 0
-    while i < len(src_tgt_list_pairs):
-        src_list, tgt_list = src_tgt_list_pairs[i]
+    while i < len(indices_to_delete):
+        src_list, tgt_list = indices_to_delete[i]
         if prob_delete > np.random.rand() and len(src_list) > 1:
             index_to_del = np.random.randint(0,len(src_list))
             if 0.5 > np.random.rand(): # delete in src
                 src_list.pop(index_to_del)
             else: # del in tgt
                 tgt_list.pop(index_to_del)
-        new_src_tgts.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
+        indices_to_move.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
         i += 1
     # print()
-    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
+    # pprint([(" ".join([str(s) for s in src]), " ".join([str(t) for t in tgt])) for src, tgt in indices_to_move])
     # print()
-    # then swap some
-    src_tgt_list_pairs = new_src_tgts
-    new_src_tgts = []
+    indices_to_swap = []
+    i = 0 
+    # for each tuple, chose either src or tgt, and then choose to move it up or down by one
+    while i < len(indices_to_move) and len(indices_to_move) != 1:
+        src_list, tgt_list = indices_to_move[i]
+        if prob_move > np.random.rand():
+            # move it up or down if available
+            possible_directions = []
+            if i > 0:
+                possible_directions.append(-1)
+            if i < len(indices_to_move) - 1:
+                possible_directions.append(1)
+            direction = np.random.choice(possible_directions)
+            src_or_tgt = np.random.choice([0,1])
+            if len(indices_to_move[i][src_or_tgt]) <= 1: # don't want to leave a tgt with no src pair. for the purpose of testing this is an ok assumption to have.
+                i += 1
+                continue
+            index_moving = np.random.choice(indices_to_move[i][src_or_tgt])
+            indices_to_move[i][src_or_tgt].remove(index_moving)
+            insertion_index = 0 if len(indices_to_move[i+direction][src_or_tgt]) == 0 else np.random.choice(len(indices_to_move[i+direction][src_or_tgt]))
+            indices_to_move[i+direction][src_or_tgt].insert(insertion_index, index_moving)
+        i += 1
+    indices_to_swap = indices_to_move
+    # print()
+    # pprint([(" ".join([str(s) for s in src]), " ".join([str(t) for t in tgt])) for src, tgt in indices_to_swap])
+    # print()
+    indices_to_map = []
     i = 0
-    while i < len(src_tgt_list_pairs):
-        src_list, tgt_list = src_tgt_list_pairs[i]
+    while i < len(indices_to_swap):
+        src_list, tgt_list = indices_to_swap[i]
         if prob_swap > np.random.rand():
             if 0.5 > np.random.rand() and len(src_list) > 1: # swap in src
                 # I'll just permute as its only 3 items max.
                 src_list = [src_list[j] for j in np.random.permutation(len(src_list))]
             elif len(tgt_list) > 1: # swap in tgt
                 tgt_list = [tgt_list[j] for j in np.random.permutation(len(tgt_list))]
-        new_src_tgts.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
+        indices_to_map.append((src_list, tgt_list)) # technically remove is inplace, but whatever.
         i += 1
-    # pprint([(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts])
-    new_src_tgts = [(" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts]
-    return new_src_tgts
-# preprocessing(list(zip([str(i) for i in range(40)],[str(i) for i in range(40)])), None);
+    # pprint([(" ".join([str(s) for s in src]), " ".join([str(t) for t in tgt])) for src, tgt in indices_to_map])
+    new_src_tgts = [] # (" ".join(src), " ".join(tgt)) for src, tgt in new_src_tgts
+    new_gold_lines = ([], []) if gold_lines is not None else None # possible_labels_list, sure_labels_list
+    for src_indices, tgt_indices in indices_to_map:
+        src_sent = " ".join(src_tgt_pairs[i][0] for i in src_indices)
+        tgt_sent = " ".join(src_tgt_pairs[i][1] for i in tgt_indices)
+        new_src_tgts.append((src_sent, tgt_sent))
+        if new_gold_lines is not None:
+            new_gold_lines[0].append([])
+            new_gold_lines[1].append([])
+            for i in set(src_indices).intersection(tgt_indices):
+                start_src_word_indices = sum(len(src_tgt_pairs[j][0].split(' ')) for j in src_indices[:src_indices.index(i)])
+                start_tgt_word_indices = sum(len(src_tgt_pairs[j][1].split(' ')) for j in tgt_indices[:tgt_indices.index(i)])
+                possible_labels, sure_labels = get_word_2_word_gold_alignments(gold_lines[i], gold_one_index, ignore_possible_alignments)
+                possible_labels = [(start_src_word_indices+s, start_tgt_word_indices+t) for s, t in possible_labels]
+                sure_labels = [(start_src_word_indices+s, start_tgt_word_indices+t) for s, t in sure_labels]
+                new_gold_lines[0][-1].extend(possible_labels)
+                new_gold_lines[1][-1].extend(sure_labels)
+    
+    # TODO: add the movement of sentences in the particular dataset.
+    if new_gold_lines is not None:
+        # account for removed matches.
+        paired_indices = set()
+        num_sure_deleted, num_possible_deleted = 0, 0
+        for src_indices, tgt_indices in indices_to_map:
+            for i in set(src_indices).intersection(tgt_indices):
+                paired_indices.add(i)
+        for i in range(len(src_tgt_pairs)):
+            if i not in paired_indices:
+                sure_deleted = gold_lines[i].count("-")
+                num_sure_deleted += sure_deleted
+                num_possible_deleted += sure_deleted + ( 0 if ignore_possible_alignments else  gold_lines[i].count("p") )
+        return (new_src_tgts, new_gold_lines[0], new_gold_lines[1], (num_possible_deleted, num_sure_deleted))
+    else:
+        return new_src_tgts, new_gold_lines
+# preprocessing(list(zip([str(i) for i in range(15)],[str(i) for i in range(15)])), ["0p0" for i in range(15)], gold_one_index=False, ignore_possible_alignments=False, prob_combine=1.0, prob_delete=1.0,  prob_move=1.0, prob_swap=1.0);
 class AwesomeAlignDatasetBase(Dataset[AwesomeAlignDatasetReturn], ABC):
     src_tgt_pairs: List[Tuple[str, str]]
     tokenizer: PreTrainedTokenizerBase
     gold_lines: Any
+    sure_alignments: Optional[List[Tuple[int, int]]] = None
+    possible_alignments: Optional[List[Tuple[int, int]]] = None
     gold_one_index: bool
     ignore_possible_alignments: bool
-
+    preprocessing_stats: Any = (0, 0)
+    
     def __len__(self):
         return len(self.src_tgt_pairs)
     
@@ -189,12 +246,16 @@ class AwesomeAlignDatasetBase(Dataset[AwesomeAlignDatasetReturn], ABC):
             negative_sentence_src_ids=negative_sentence_src_ids,
             negative_sentence_tgt_ids=negative_sentence_tgt_ids,
         )
-        if self.gold_lines:
-            possible_labels, sure_labels = get_word_2_word_gold_alignments(self.gold_lines[i], self.gold_one_index, self.ignore_possible_alignments)
+        if self.gold_lines is not None or (self.possible_alignments is not None and self.sure_alignments is not None):
+            if isinstance(self.possible_alignments, List) and isinstance(self.sure_alignments, List):
+                possible_labels, sure_labels = self.possible_alignments[i], self.sure_alignments[i]
+            else:
+                possible_labels, sure_labels = get_word_2_word_gold_alignments(self.gold_lines[i], self.gold_one_index, self.ignore_possible_alignments)
             example.sure_labels = sure_labels
             example.possible_labels = possible_labels
         return example
-    
+# preprocessing();
+#%%
 class AwesomeAlignDatasetMultilingualTraining(AwesomeAlignDatasetBase):
     def __init__(self, 
                  tokenizer: PreTrainedTokenizerBase,
@@ -202,12 +263,14 @@ class AwesomeAlignDatasetMultilingualTraining(AwesomeAlignDatasetBase):
                  src_tgt_roen_file: str,
                  src_tgt_deen_file: str,
                  src_tgt_jaen_file: str,
-                 preprocessing: Callable[[List[Tuple[str,str]],Any], List[Tuple[str,str]]],
+                 preprocessing: Callable[[List[Tuple[str,str]],Any,bool,bool], (Tuple[List[Tuple[str, str]], Any] | Tuple[List[Tuple[str, str]], Any, Any])],
                  len_per_lang: int):
         self.tokenizer = tokenizer
         self.gold_lines = None
         self.gold_one_index = False
         self.ignore_possible_alignments = False
+        self.sure_alignments = None
+        self.possible_alignments = None
         # opens all the files independantly and preprocesses them, and then combines them into one long thing.
         self.src_tgt_pairs = []
         for file_name in tqdm([src_tgt_enfr_file, src_tgt_roen_file, src_tgt_deen_file, src_tgt_jaen_file], desc="MultiLingual Dataprep"):
@@ -225,16 +288,19 @@ class AwesomeAlignDatasetMultilingualTraining(AwesomeAlignDatasetBase):
                     src_tgt_pairs_one_lang.append((src, tgt))
                     if i >= len_per_lang:
                         break
-            self.src_tgt_pairs += preprocessing(src_tgt_pairs_one_lang, None)
+            self.src_tgt_pairs += preprocessing(src_tgt_pairs_one_lang, None, self.gold_one_index, self.ignore_possible_alignments)[0]
 
 class AwesomeAlignDataset(AwesomeAlignDatasetBase):
+    # def __init__(self, *args, **kwargs):
+    #     print((args, kwargs))
     def __init__(self, 
                  tokenizer: PreTrainedTokenizerBase, 
                  src_tgt_file: str, 
                  gold_file: Optional[str], 
                  gold_one_index: bool, 
                  ignore_possible_alignments: bool,
-                 preprocessing: Callable[[List[Tuple[str,str]],Any], List[Tuple[str,str]]]):
+                 preprocessing: Callable[[List[Tuple[str,str]],Any,bool,bool], (Tuple[List[Tuple[str, str]], Any] | Tuple[List[Tuple[str, str]], Any, Any, Any])],
+                 ):
         self.tokenizer = tokenizer
         src_tgt_lines = open(src_tgt_file, encoding="utf-8").readlines()
 
@@ -256,17 +322,29 @@ class AwesomeAlignDataset(AwesomeAlignDatasetBase):
 
         if self.gold_lines:
             self.gold_lines = [self.gold_lines[i] for i in subset_indices]
-        self.src_tgt_pairs = preprocessing(self.src_tgt_pairs, self.gold_lines)
         self.gold_one_index = gold_one_index
         self.ignore_possible_alignments = ignore_possible_alignments
+        # import ipdb; ipdb.set_trace()
+        preprocessing_ret = preprocessing(self.src_tgt_pairs, self.gold_lines, self.gold_one_index, self.ignore_possible_alignments)
+        if len(preprocessing_ret) == 2:
+            self.src_tgt_pairs, self.gold_lines = preprocessing_ret
+        else:
+            assert len(preprocessing_ret) == 4
+            self.src_tgt_pairs, self.possible_alignments, self.sure_alignments, self.preprocessing_stats = preprocessing_ret
+
 
 
 class AwesomeAlignDatasetsMap:
-    def __init__(self, enfr_dataset, deen_dataset, roen_dataset, jaen_dataset):
+    def __init__(self, enfr_dataset, deen_dataset, roen_dataset, jaen_dataset, geen_dataset, enfrpp_dataset, deenpp_dataset, roenpp_dataset, jaenpp_dataset, geenpp_dataset):
         self.enfr_dataset = enfr_dataset
         self.deen_dataset = deen_dataset
         self.roen_dataset = roen_dataset
         self.jaen_dataset = jaen_dataset
+        self.geen_dataset = geen_dataset
+        self.enfrpp_dataset = enfrpp_dataset
+        self.deenpp_dataset = deenpp_dataset
+        self.roenpp_dataset = roenpp_dataset
+        self.jaenpp_dataset = jaenpp_dataset
         self.map = dict()
         if enfr_dataset is not None:
             self.map["enfr"] = enfr_dataset
@@ -276,7 +354,19 @@ class AwesomeAlignDatasetsMap:
             self.map["deen"] = deen_dataset
         if jaen_dataset is not None:
             self.map["jaen"] = jaen_dataset
-    def get(self, dataset_name):
+        if geen_dataset is not None:
+            self.map["geen"] = geen_dataset
+        if enfrpp_dataset is not None:
+            self.map["enfrpp"] = enfrpp_dataset
+        if roenpp_dataset is not None:
+            self.map["roenpp"] = roenpp_dataset
+        if deenpp_dataset is not None:
+            self.map["deenpp"] = deenpp_dataset
+        if jaenpp_dataset is not None:
+            self.map["jaenpp"] = jaenpp_dataset
+        if geenpp_dataset is not None:
+            self.map["geenpp"] = geenpp_dataset
+    def get(self, dataset_name: str) -> AwesomeAlignDatasetBase:
         return self.map[dataset_name]
     def keys(self):
         return self.map.keys()

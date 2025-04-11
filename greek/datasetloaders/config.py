@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from omegaconf import MISSING
 from hydra.core.config_store import ConfigStore
 from typing import Any, List, Dict, Optional
-from greek.dataset.config import AwesomeAlignDataset, AwesomeAlignDatasetsMap
+from greek.dataset.config import AwesomeAlignDatasetCfg, AwesomeAlignDatasetsMap
 
 @dataclass
 class HFTokenizer:
@@ -22,6 +22,7 @@ class AwesomeAlignDatasetLoaders:
         # I have to place the tokenizer somewhere, and it can't be in this class or a circular dependancy occurs?
         # TODO: figure out how to make the tokenizer only be instantiated once, and have it passed to all objects as the same instance.
         {"/tokenizer@_global_.tokenizer": "BERTTokenizer"},
+        {"/preprocessing@_global_.preprocessing": "identity_preprocessing"},
         {"/dataset@train_dataset": "MultilingualUnsupervisedAwesomeAlignDatasetTraining"},
         {"/datasetmap@val_datasets": "nozhSupervisedAwesomeAlignDatasetsMapEval"},
         {"/datasetmap@test_datasets": "nozhSupervisedAwesomeAlignDatasetsMapTest"},

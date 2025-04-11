@@ -45,23 +45,23 @@ class AwesomeAlignDatasetLoaders:
         self.pin_memory = pin_memory
         self.pin_memory_device = pin_memory_device
 
-    def setup(self, block_size):
-        self.collate_fn = get_collate_fn(pad_token_id=self.tokenizer.pad_token_id, block_size=block_size)
+    def setup(self, mlm_probability, word_masking, block_size):
+        self.collate_fn = get_collate_fn(mlm_probability=mlm_probability, word_masking=word_masking, tokenizer=self.tokenizer, block_size=block_size)
         # self.train_loader = # this can also have labels, or not!
-        # self.eval_loader =  # this can have labels, or not...
+        # self.eval_loader = # this can have labels, or not...
         # self.test_loader = # this must have lables, and you are expected to get out the AER metric. Could also record the loss from the unsupervised objective losses.
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, sampler=RandomSampler(self.train_dataset), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
         # return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
-    
+
     def val_dataloaders_iterator(self):
         for dataset_name in self.val_datasets.keys():
-            yield dataset_name, DataLoader(self.val_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device)
+            yield dataset_name, DataLoader(self.val_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device), self.val_datasets.get(dataset_name).preprocessing_stats
     
     def test_dataloaders_iterator(self):
         for dataset_name in self.test_datasets.keys():
-            yield dataset_name, DataLoader(self.test_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device) 
+            yield dataset_name, DataLoader(self.test_datasets.get(dataset_name), batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.collate_fn, pin_memory=self.pin_memory, pin_memory_device=self.pin_memory_device), self.test_datasets.get(dataset_name).preprocessing_stats
 
 
 
